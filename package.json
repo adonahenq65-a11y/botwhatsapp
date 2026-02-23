@@ -2,13 +2,12 @@
   "name": "whatsapp-bot",
   "version": "2.0.0",
   "description": "Bot de WhatsApp completo para programación de mensajes",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js",
-    "clean": "rmdir /s node_modules && del package-lock.json",
-    "reinstall": "npm run clean && npm install",
-    "build": "echo 'No build step required'"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "echo 'Build step complete'",
+    "postinstall": "npm install puppeteer --ignore-scripts || true"
   },
   "keywords": [
     "whatsapp",
@@ -20,21 +19,21 @@
   "author": "Tu Nombre",
   "license": "MIT",
   "dependencies": {
-    "axios": "^1.13.5",
-    "cheerio": "^1.2.0",
+    "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12",
     "express": "^4.18.2",
-    "moment-timezone": "^0.5.48",
-    "pdfkit": "^0.15.2",
-    "puppeteer": "^21.11.0",
+    "moment-timezone": "^0.5.43",
+    "pdfkit": "^0.14.0",
+    "puppeteer": "^19.11.1",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.34.6",
+    "whatsapp-web.js": "^1.23.0",
     "xlsx": "^0.18.5"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.0.1"
   },
   "type": "commonjs"
 }
