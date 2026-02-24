@@ -2,9 +2,6 @@
 
 echo "🚀 Iniciando build optimizado para Render..."
 
-# Usar Node.js 18 específicamente
-export NODE_VERSION=18.18.0
-
 # Instalar dependencias sin scripts para evitar descargas pesadas
 npm install --ignore-scripts
 
