@@ -2,13 +2,13 @@
 
 echo "🚀 Iniciando build optimizado para Render..."
 
-# Instalar dependencias sin scripts para evitar descargas pesadas
-npm install --ignore-scripts
+# Instalar dependencias
+npm install
 
-# Instalar puppeteer de manera ligera
-npm install puppeteer@19.11.1 --no-optional
+# Forzar instalación de puppeteer con la versión correcta
+npm install puppeteer@21.11.0 --save
 
-# Descargar Chromium específico para el entorno
-npx puppeteer browsers install chrome
+# Instalar Chrome
+node node_modules/puppeteer/install.js
 
 echo "✅ Build completado exitosamente"
