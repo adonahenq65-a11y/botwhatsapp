@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 
-echo "🚀 Iniciando build optimizado para Render..."
+echo "🚀 Iniciando build ultra-rápido..."
 
-# Forzar descarga de Chrome
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
-export PUPPETEER_CACHE_DIR=/opt/render/project/.cache/puppeteer
+# Instalar Chrome del sistema (NO descargar)
+sudo apt-get update
+sudo apt-get install -y wget gnupg
+sudo wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+sudo apt-get update
+sudo apt-get install -y google-chrome-stable
 
-# Instalar dependencias
+# Instalar dependencias (sin puppeteer pesado)
+npm install puppeteer-core
+
+# Variables de entorno
+export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+export PUPPETEER_EXECUTABLE_PATH=$(which google-chrome-stable)
+
+# Instalar resto de dependencias
 npm install
 
-# Instalar Chrome a la fuerza
-echo "📦 Forzando instalación de Chrome..."
-node node_modules/puppeteer/install.js
-
-# Verificar instalación
-echo "🔍 Verificando Chrome:"
-find /opt/render -name "chrome" -type f 2>/dev/null || echo "Chrome no encontrado"
-
-echo "✅ Build completado exitosamente"
+echo "✅ Build completado"
+echo "📍 Chrome instalado en: $(which google-chrome-stable)"
