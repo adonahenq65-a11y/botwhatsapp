@@ -78,7 +78,6 @@ const client = new Client({
     }),
     puppeteer: {
         headless: true,
-        executablePath: '/usr/bin/chromium-browser', // 👈 ESTA ES LA RUTA CORRECTA EN RENDER
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
