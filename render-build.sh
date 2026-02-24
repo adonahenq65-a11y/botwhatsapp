@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
-echo "🚀 Iniciando build express..."
+echo "🚀 Iniciando build ultra-rápido..."
 
-# Instalar solo lo necesario (sin instalar Chrome)
-npm install puppeteer@21.11.0 --no-optional
+# Instalar dependencias (sin instalar Chrome)
+npm install --ignore-scripts
 
-# Instalar las demás dependencias
-npm install
+# Decirle a Puppeteer que use el Chrome del sistema
+export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Verificar instalación
-echo "✅ Build completado. Chrome se descargará al iniciar el bot."
+echo "✅ Build completado en tiempo récord"
