@@ -71,30 +71,6 @@ const MESES = [
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
 ];
 
-// Antes de crear el cliente, asegurar que Chrome existe
-const puppeteer = require('puppeteer');
-
-async function asegurarChrome() {
-    try {
-        // Intentar lanzar Chrome para ver si existe
-        const browser = await puppeteer.launch({
-            headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-        await browser.close();
-        console.log('✅ Chrome encontrado y funcionando');
-    } catch (error) {
-        console.log('⚠️ Chrome no encontrado, descargando...');
-        // Forzar descarga de Chrome
-        const { execSync } = require('child_process');
-        execSync('node node_modules/puppeteer/install.js', { stdio: 'inherit' });
-        console.log('✅ Chrome descargado');
-    }
-}
-
-// Llamar a la función antes de iniciar el cliente
-await asegurarChrome();
-
 const client = new Client({
     authStrategy: new LocalAuth({
         clientId: "bot-seguridad",
@@ -102,6 +78,7 @@ const client = new Client({
     }),
     puppeteer: {
         headless: "new",
+        executablePath: '/usr/bin/google-chrome', // 👈 Ruta FIJA de Chrome en Render
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
