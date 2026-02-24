@@ -6,8 +6,8 @@ const moment = require('moment-timezone');
 const axios = require('axios');
 const XLSX = require('xlsx');
 const PDFDocument = require('pdfkit');
-
 const express = require('express');
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -71,6 +71,38 @@ const MESES = [
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
 ];
 
+async function findChrome() {
+    const possiblePaths = [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/app/.apt/usr/bin/google-chrome',
+        '/app/.apt/usr/bin/chromium-browser'
+    ];
+    
+    for (const path of possiblePaths) {
+        if (fs.existsSync(path)) {
+            console.log(`✅ Chrome encontrado en: ${path}`);
+            return path;
+        }
+    }
+    
+    try {
+        const { execSync } = require('child_process');
+        const which = execSync('which google-chrome-stable || which chromium-browser || which chromium').toString().trim();
+        if (which) {
+            console.log(`✅ Chrome encontrado via which: ${which}`);
+            return which;
+        }
+    } catch (e) {}
+    
+    console.log('⚠️ Chrome no encontrado, usando chromium-browser por defecto');
+    return '/usr/bin/chromium-browser';
+}
+
+const chromePath = await findChrome();
+
 const client = new Client({
     authStrategy: new LocalAuth({
         clientId: "bot-seguridad",
@@ -78,6 +110,7 @@ const client = new Client({
     }),
     puppeteer: {
         headless: true,
+        executablePath: chromePath,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -85,8 +118,14 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--disable-gpu',
             '--no-first-run',
-            '--no-zygote'
+            '--no-zygote',
+            '--single-process',
+            '--disable-extensions'
         ]
+    },
+    webVersionCache: {
+        type: "remote",
+        remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html"
     }
 });
 
@@ -106,6 +145,56 @@ function crearCarpetas() {
             fs.mkdirSync(carpeta, { recursive: true });
         }
     });
+}
+
+function limpiarArchivosTemporales() {
+    console.log(`🧹 Iniciando limpieza de archivos temporales...`);
+    
+    const carpetasALimpiar = [
+        path.join(__dirname, 'temp'),
+        path.join(__dirname, 'media', 'imagenes'),
+        path.join(__dirname, 'media', 'videos'),
+        path.join(__dirname, 'media', 'documentos'),
+        path.join(__dirname, 'media', 'otros'),
+        path.join(__dirname, 'reportes-cip')
+    ];
+    
+    const ahora = Date.now();
+    const tiempoMaximo = 24 * 60 * 60 * 1000;
+    let archivosEliminados = 0;
+    let espacioLiberado = 0;
+    
+    carpetasALimpiar.forEach(carpeta => {
+        if (fs.existsSync(carpeta)) {
+            try {
+                const archivos = fs.readdirSync(carpeta);
+                
+                archivos.forEach(archivo => {
+                    const rutaCompleta = path.join(carpeta, archivo);
+                    
+                    try {
+                        const stats = fs.statSync(rutaCompleta);
+                        
+                        if (stats.isFile()) {
+                            const tiempoArchivo = stats.mtimeMs;
+                            const edadArchivo = ahora - tiempoArchivo;
+                            
+                            if (edadArchivo > tiempoMaximo) {
+                                const tamañoArchivo = stats.size;
+                                fs.unlinkSync(rutaCompleta);
+                                archivosEliminados++;
+                                espacioLiberado += tamañoArchivo;
+                            }
+                        }
+                    } catch (error) {}
+                });
+            } catch (error) {}
+        }
+    });
+    
+    if (archivosEliminados > 0) {
+        console.log(`✅ Limpieza: ${archivosEliminados} archivos (${(espacioLiberado / (1024 * 1024)).toFixed(2)} MB)`);
+    }
 }
 
 function obtenerSaludo() {
@@ -263,8 +352,6 @@ function numeroConEmoji(num) {
 
 async function consultarRegistrosCIP(tanque, tipoBusqueda, fechaInicio, fechaFin, mes, año) {
     try {
-        console.log(`🔍 Consultando registros CIP - Tanque: ${tanque}, Tipo: ${tipoBusqueda}`);
-        
         let url = `${FIREBASE_CIP_CONFIG.databaseURL}/registrosCIP.json`;
         const response = await axios.get(url, { timeout: 30000 });
         const registros = response.data || {};
@@ -305,11 +392,9 @@ async function consultarRegistrosCIP(tanque, tipoBusqueda, fechaInicio, fechaFin
             return b.fecha.localeCompare(a.fecha);
         });
         
-        console.log(`✅ Encontrados ${registrosFiltrados.length} registros`);
         return registrosFiltrados;
         
     } catch (error) {
-        console.error("Error al consultar registros CIP:", error.message);
         return [];
     }
 }
@@ -426,7 +511,6 @@ async function generarExcel(registros, tanque, tipoBusqueda, filtros) {
         };
         
     } catch (error) {
-        console.error("Error al generar Excel:", error);
         return {
             success: false,
             error: error.message
@@ -578,7 +662,7 @@ async function manejarSeleccionTanque(message, userId, estadoUsuario) {
     await message.reply(
         `✅ Tanque seleccionado: *${tanqueSeleccionado === 'todos' ? 'TODOS LOS TANQUES' : tanqueSeleccionado}*\n\n` +
         `¿Cómo quieres buscar la información?\n\n` +
-        `1️⃣ - *Por rango de fechas* (ej: del 1 al 20)\n` +
+        `1️⃣ - *Por rango de fechas*\n` +
         `2️⃣ - *Por mes completo*\n\n` +
         `Envía el número de la opción (1-2)`
     );
@@ -658,7 +742,7 @@ async function manejarRangoFechas(message, userId, estadoUsuario) {
     await message.reply(
         "✅ Rango de fechas configurado correctamente.\n\n" +
         "¿En qué formato deseas descargar la información?\n\n" +
-        "1️⃣ - *Excel* (XLSX)\n" +
+        "1️⃣ - *Excel*\n" +
         "2️⃣ - *PDF*\n\n" +
         "Envía el número de la opción (1-2)"
     );
@@ -707,39 +791,33 @@ async function manejarSeleccionAnio(message, userId, estadoUsuario) {
     await message.reply(
         "✅ Mes y año configurados correctamente.\n\n" +
         "¿En qué formato deseas descargar la información?\n\n" +
-        "1️⃣ - *Excel* (XLSX)\n" +
+        "1️⃣ - *Excel*\n" +
         "2️⃣ - *PDF*\n\n" +
         "Envía el número de la opción (1-2)"
     );
 }
 
-// Función mejorada para eliminar archivos de manera segura
 function eliminarArchivoSeguro(rutaArchivo) {
     return new Promise((resolve) => {
         try {
             if (rutaArchivo && fs.existsSync(rutaArchivo)) {
-                // Esperar un poco más para asegurar que el archivo se haya enviado
                 setTimeout(() => {
                     try {
                         fs.unlinkSync(rutaArchivo);
-                        console.log(`✅ Archivo eliminado: ${path.basename(rutaArchivo)}`);
                         resolve(true);
                     } catch (error) {
-                        console.error(`❌ Error al eliminar archivo ${rutaArchivo}:`, error.message);
                         resolve(false);
                     }
-                }, 8000); // Aumentado a 8 segundos para dar tiempo suficiente
+                }, 8000);
             } else {
                 resolve(false);
             }
         } catch (error) {
-            console.error(`❌ Error en eliminación de archivo:`, error.message);
             resolve(false);
         }
     });
 }
 
-// Función principal mejorada para manejar el formato de descarga
 async function manejarFormatoDescarga(message, userId, estadoUsuario) {
     const opcion = message.body.trim();
     
@@ -748,7 +826,7 @@ async function manejarFormatoDescarga(message, userId, estadoUsuario) {
         return;
     }
     
-    await message.reply("🔍 Consultando registros CIP... Esto puede tomar unos segundos.");
+    await message.reply("🔍 Consultando registros CIP...");
     
     let registros = [];
     try {
@@ -761,24 +839,17 @@ async function manejarFormatoDescarga(message, userId, estadoUsuario) {
             estadoUsuario.datos.año
         );
     } catch (error) {
-        console.error("Error al consultar registros:", error);
-        await message.reply("❌ Error al consultar los registros. Intenta nuevamente.");
+        await message.reply("❌ Error al consultar los registros.");
         userStates.delete(userId);
-        await enviarMenu(message);
         return;
     }
     
     if (registros.length === 0) {
         await message.reply(
             "❌ *No se encontraron registros*\n\n" +
-            "No hay información disponible para los criterios seleccionados.\n\n" +
-            "Verifica:\n" +
-            "• El tanque seleccionado\n" +
-            "• El rango de fechas\n" +
-            "• El mes y año"
+            "No hay información disponible para los criterios seleccionados."
         );
         userStates.delete(userId);
-        await enviarMenu(message);
         return;
     }
     
@@ -793,10 +864,8 @@ async function manejarFormatoDescarga(message, userId, estadoUsuario) {
             resultado = await generarPDF(registros, estadoUsuario.datos.tanque, estadoUsuario.datos.tipoBusqueda, estadoUsuario.datos);
         }
     } catch (error) {
-        console.error("Error al generar archivo:", error);
-        await message.reply("❌ Error al generar el archivo. Intenta nuevamente.");
+        await message.reply("❌ Error al generar el archivo.");
         userStates.delete(userId);
-        await enviarMenu(message);
         return;
     }
     
@@ -804,30 +873,24 @@ async function manejarFormatoDescarga(message, userId, estadoUsuario) {
         try {
             const media = MessageMedia.fromFilePath(resultado.ruta);
             
-            // Enviar el archivo
             await message.reply(
                 media,
                 undefined,
                 { caption: `✅ *ARCHIVO GENERADO*\n\n📁 ${resultado.nombre}\n📊 Total registros: ${registros.length}` }
             );
             
-            // Eliminar el archivo después de enviarlo
             await eliminarArchivoSeguro(resultado.ruta);
             
         } catch (error) {
-            console.error("Error al enviar archivo:", error);
-            await message.reply("❌ Error al enviar el archivo. Intenta nuevamente.");
-            
-            // Intentar eliminar el archivo incluso si hay error
+            await message.reply("❌ Error al enviar el archivo.");
             await eliminarArchivoSeguro(resultado.ruta);
         }
         
     } else {
-        await message.reply("❌ Error al generar el archivo. Intenta nuevamente.");
+        await message.reply("❌ Error al generar el archivo.");
     }
     
     userStates.delete(userId);
-    await enviarMenu(message);
 }
 
 function base64ToArrayBuffer(base64) {
@@ -847,15 +910,12 @@ async function procesarExcelDesdeBase64(base64) {
         const datos = XLSX.utils.sheet_to_json(sheet);
         return datos;
     } catch (error) {
-        console.error("Error al procesar Excel:", error);
         return [];
     }
 }
 
 async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSeleccionado) {
     try {
-        console.log(`🔍 Consultando Guardian para código: ${codigoEmpleado}, mes: ${mesSeleccionado}, año: ${anioSeleccionado}`);
-        
         const mes = mesSeleccionado.toString().padStart(2, '0');
         const anio = anioSeleccionado.toString();
         
@@ -874,9 +934,7 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
                         ...r,
                         tipoReporte: reporte.tipo
                     })));
-                } catch (error) {
-                    console.error(`Error procesando reporte ${reporteId}:`, error);
-                }
+                } catch (error) {}
             }
         }
         
@@ -1046,22 +1104,10 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
         };
         
     } catch (error) {
-        console.error("Error en consultarGuardian:", error.message);
-        
         let mensajeError = "❌ *ERROR EN CONSULTA GUARDIAN*\n\n";
         mensajeError += `No se pudo realizar la búsqueda para el código: ${codigoEmpleado}\n\n`;
         mensajeError += "🔗 *Enlace:* https://reportesdeguardian.web.app/infor.html\n";
         mensajeError += "⏰ *Hora:* " + moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm') + "\n\n";
-        
-        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-            mensajeError += "💡 *Causa:* No se pudo conectar a la base de datos\n";
-            mensajeError += "• Verifica tu conexión a internet\n";
-            mensajeError += "• El servidor puede estar temporalmente fuera de línea\n";
-        } else {
-            mensajeError += `💡 *Causa:* ${error.message}\n`;
-        }
-        
-        mensajeError += "\n📞 *Contacta al supervisor de turno para más información*";
         
         return {
             success: false,
@@ -1083,17 +1129,12 @@ async function manejarGuardian(message, userId) {
         `• 76001111\n` +
         `• 1111\n` +
         `• 76009949\n\n` +
-        `*📝 IMPORTANTE:*\n` +
-        `Puedes buscar con el código completo o cualquier parte que coincida.\n` +
-        `El sistema buscará tanto reportes que hayas hecho como acciones inseguras donde apareces como implicado.\n\n` +
         `Envía tu código ahora o escribe *cancelar* para regresar al menú.`
     );
 }
 
 async function consultarReclamosCalidad() {
     try {
-        console.log('🔍 Consultando reclamos de calidad desde Firestore...');
-        
         const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_RECLAMOS_CONFIG.projectId}/databases/(default)/documents/quality_claims?orderBy=createdAt desc`;
         
         const response = await axios.get(firestoreUrl, {
@@ -1196,17 +1237,10 @@ async function consultarReclamosCalidad() {
         };
 
     } catch (error) {
-        console.error("Error en consultarReclamosCalidad:", error.message);
-        
         let mensajeError = "❌ *ERROR AL CONSULTAR RECLAMOS DE CALIDAD*\n\n";
         mensajeError += "No se pudo conectar con la base de datos de reclamos.\n\n";
         mensajeError += "🔗 *Enlace alternativo:* https://reclamo-39ff3.web.app/\n";
         mensajeError += "⏰ *Hora:* " + moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm') + "\n\n";
-        mensajeError += "💡 *Posibles causas:*\n";
-        mensajeError += "• Problemas de conexión a internet\n";
-        mensajeError += "• El servidor de Firebase puede estar temporalmente fuera de línea\n";
-        mensajeError += "• La base de datos podría no tener datos\n\n";
-        mensajeError += "📞 *Contacta al administrador del sistema*";
         
         return {
             success: false,
@@ -1228,8 +1262,6 @@ async function obtenerChecklistSeguridad(message, userId) {
 
 async function obtenerGruposDisponibles(message, userId) {
     try {
-        console.log('🔍 Consultando grupos desde Dashboard de seguridad...');
-        
         const response = await axios.get(`${FIREBASE_CONFIG.databaseURL}/registros.json`, {
             timeout: 15000
         });
@@ -1260,8 +1292,6 @@ async function obtenerGruposDisponibles(message, userId) {
         });
         
     } catch (error) {
-        console.error("Error al obtener grupos:", error);
-        
         let menuGrupos = `👥 *GRUPOS DISPONIBLES*\n\n`;
         GRUPOS_DISPONIBLES.forEach((grupo, index) => {
             menuGrupos += `${numeroConEmoji(index + 1)} - ${grupo}\n`;
@@ -1327,8 +1357,7 @@ async function obtenerAnosDisponibles(message, userId, tipo, identificador) {
         });
         
     } catch (error) {
-        console.error("Error al obtener años:", error);
-        await message.reply("❌ Error al consultar años disponibles. Usando año actual.");
+        await message.reply("❌ Error al consultar años disponibles.");
         
         if (tipo === 'grupo') {
             await obtenerMesesGrupo(message, userId, identificador, moment().tz(TIMEZONE).year());
@@ -1357,12 +1386,10 @@ async function obtenerMesesGrupo(message, userId, grupoSeleccionado, añoSelecci
 
 async function obtenerResultadosGrupo(message, userId, grupo, añoSeleccionado, mesSeleccionado) {
     try {
-        await message.reply(`🔍 Buscando resultados para *${grupo}* de *${MESES[mesSeleccionado - 1]} ${añoSeleccionado}*...`);
+        await message.reply(`🔍 Buscando resultados para *${grupo}*...`);
         
         const fechaInicio = moment().tz(TIMEZONE).year(añoSeleccionado).month(mesSeleccionado - 1).startOf('month');
         const fechaFin = moment().tz(TIMEZONE).year(añoSeleccionado).month(mesSeleccionado - 1).endOf('month');
-        
-        console.log(`Consultando reportes desde ${fechaInicio.format('YYYY-MM-DD')} hasta ${fechaFin.format('YYYY-MM-DD')}`);
         
         const usuariosResponse = await axios.get(`${FIREBASE_CONFIG.databaseURL}/registros.json`, {
             timeout: 15000
@@ -1469,20 +1496,12 @@ async function obtenerResultadosGrupo(message, userId, grupo, añoSeleccionado, 
         
         await message.reply(resultado);
         
-        await message.reply(`¿Deseas consultar otro período para el mismo grupo?\n\n1️⃣ - Sí\n2️⃣ - No, volver al menú principal\n\nEnvía el número de la opción.`);
-        
-        userStates.set(userId, { 
-            estado: 'checklist_consultar_otro_periodo_grupo',
-            datos: { grupo: grupo }
-        });
+        userStates.delete(userId);
         
     } catch (error) {
-        console.error("Error al obtener resultados del grupo:", error);
-        
-        await message.reply(`❌ *Error al consultar resultados*\n\nNo se pudo obtener la información del grupo ${grupo}.\n\nDetalles: ${error.message}\n\nIntenta nuevamente más tarde.`);
+        await message.reply(`❌ *Error al consultar resultados*\n\nNo se pudo obtener la información del grupo ${grupo}.`);
         
         userStates.delete(userId);
-        await enviarMenu(message);
     }
 }
 
@@ -1522,7 +1541,7 @@ async function obtenerMesesTecnico(message, userId, codigoTecnico, añoSeleccion
         }
         
         if (!tecnicoEncontrado) {
-            await message.reply(`❌ *Técnico no encontrado*\n\nNo se encontró ningún técnico con el código *${codigoTecnico}*.\n\nVerifica el código e intenta nuevamente.`);
+            await message.reply(`❌ *Técnico no encontrado*\n\nNo se encontró ningún técnico con el código *${codigoTecnico}*.`);
             
             await obtenerInfoTecnico(message, userId);
             return;
@@ -1549,12 +1568,9 @@ async function obtenerMesesTecnico(message, userId, codigoTecnico, añoSeleccion
         });
         
     } catch (error) {
-        console.error("Error al buscar técnico:", error);
-        
-        await message.reply(`❌ *Error al buscar técnico*\n\nNo se pudo conectar con la base de datos.\n\nIntenta nuevamente más tarde.`);
+        await message.reply(`❌ *Error al buscar técnico*\n\nNo se pudo conectar con la base de datos.`);
         
         userStates.delete(userId);
-        await enviarMenu(message);
     }
 }
 
@@ -1563,12 +1579,10 @@ async function obtenerResultadosTecnico(message, userId, tecnicoInfo, añoSelecc
         const codigo = tecnicoInfo.codigo;
         const nombreCompleto = tecnicoInfo.nombre || `${tecnicoInfo.tecnico.nombres || ''} ${tecnicoInfo.tecnico.apellidos || ''}`.trim();
         
-        await message.reply(`🔍 Buscando resultados para *${nombreCompleto}* de *${MESES[mesSeleccionado - 1]} ${añoSeleccionado}*...`);
+        await message.reply(`🔍 Buscando resultados para *${nombreCompleto}*...`);
         
         const fechaInicio = moment().tz(TIMEZONE).year(añoSeleccionado).month(mesSeleccionado - 1).startOf('month');
         const fechaFin = moment().tz(TIMEZONE).year(añoSeleccionado).month(mesSeleccionado - 1).endOf('month');
-        
-        console.log(`Consultando reportes desde ${fechaInicio.format('YYYY-MM-DD')} hasta ${fechaFin.format('YYYY-MM-DD')}`);
         
         const reportesResponse = await axios.get(`${FIREBASE_CONFIG.databaseURL}/reportes_seguridad.json`, {
             timeout: 15000
@@ -1660,31 +1674,17 @@ async function obtenerResultadosTecnico(message, userId, tecnicoInfo, añoSelecc
         
         await message.reply(resultado);
         
-        await message.reply(`¿Deseas consultar otro período para el mismo técnico?\n\n1️⃣ - Sí\n2️⃣ - No, volver al menú principal\n\nEnvía el número de la opción.`);
-        
-        userStates.set(userId, { 
-            estado: 'checklist_consultar_otro_periodo_tecnico',
-            datos: { 
-                codigo: codigo,
-                tecnico: tecnicoInfo.tecnico,
-                nombre: nombreCompleto
-            }
-        });
+        userStates.delete(userId);
         
     } catch (error) {
-        console.error("Error al obtener resultados del técnico:", error);
-        
-        await message.reply(`❌ *Error al consultar resultados*\n\nNo se pudo obtener la información del técnico.\n\nDetalles: ${error.message}\n\nIntenta nuevamente más tarde.`);
+        await message.reply(`❌ *Error al consultar resultados*\n\nNo se pudo obtener la información del técnico.`);
         
         userStates.delete(userId);
-        await enviarMenu(message);
     }
 }
 
 async function obtenerSemaforoTerritorio() {
     try {
-        console.log('🔍 Consultando semáforo de territorios desde Semáforo Territorial...');
-        
         const FIREBASE_CONFIG_FIRESTORE = {
             apiKey: "AIzaSyA_-UWmel0SkQfgcTOEf2tgcOjYFVkYR2M",
             authDomain: "seguridad-ae995.firebaseapp.com",
@@ -1718,7 +1718,6 @@ async function obtenerSemaforoTerritorio() {
             const territoryId = pathParts[pathParts.length - 1];
             
             if (!territoriosValidos[territoryId]) {
-                console.log(`⚠️ Ignorando documento no válido: ${territoryId}`);
                 continue;
             }
 
@@ -1726,19 +1725,15 @@ async function obtenerSemaforoTerritorio() {
             const fields = doc.fields || {};
             
             let status = 'unknown';
-            let statusText = '';
             
             if (fields.status) {
                 if (fields.status.stringValue) {
-                    statusText = fields.status.stringValue.toLowerCase();
-                    status = statusText === 'danger' ? 'danger' : 'safe';
+                    status = fields.status.stringValue.toLowerCase() === 'danger' ? 'danger' : 'safe';
                 } else if (fields.status.integerValue !== undefined) {
                     const statusNum = parseInt(fields.status.integerValue);
                     status = statusNum === 1 ? 'danger' : 'safe';
-                    statusText = status === 'danger' ? 'danger' : 'safe';
                 } else if (fields.status.booleanValue !== undefined) {
                     status = fields.status.booleanValue ? 'danger' : 'safe';
-                    statusText = status;
                 }
             }
             
@@ -1800,9 +1795,7 @@ async function obtenerSemaforoTerritorio() {
                             }
                         }
                     }
-                } catch (subError) {
-                    
-                }
+                } catch (subError) {}
 
                 detallesTerritorios.push({
                     numero: territorioNumero,
@@ -1855,22 +1848,14 @@ async function obtenerSemaforoTerritorio() {
         resultado += "🔗 *Fuente:* Semáforo de territorios\n";
         resultado += "⚠️ *Para más detalles, visita:* https://territorios-jarabe.web.app/\n";
 
-        console.log(`✅ Información obtenida de Firestore. Territorios en rojo: ${territoriosEnRojo.length}`);
         return resultado;
 
     } catch (error) {
-        console.error("Error en obtenerSemaforoTerritorio (Firestore):", error.message);
-        
         let mensajeError = "🚦 *INFORME SEMÁFORO DE TERRITORIOS*\n\n";
         mensajeError += "❌ *Error al obtener información*\n\n";
         mensajeError += "No se pudo conectar con la base de datos de Firestore.\n\n";
         mensajeError += "🔗 *Enlace alternativo:* https://territorios-jarabe.web.app/\n";
         mensajeError += "⏰ *Hora:* " + moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm') + "\n\n";
-        mensajeError += "💡 *Solución:*\n";
-        mensajeError += "1. Verifica tu conexión a internet\n";
-        mensajeError += "2. Verifica si la base de datos está disponible\n";
-        mensajeError += "3. Contacta al administrador 👻\n\n";
-        mensajeError += "📞 *Reporta este error al supervisor de turno*";
         
         return mensajeError;
     }
@@ -1901,13 +1886,10 @@ function esNoAplica(respuesta) {
         feedbackLower === 'n/a' ||
         feedbackLower === 'na' ||
         feedbackLower === 'no aplica' ||
-        feedbackLower === 'no-aplica' ||
         feedbackLower.includes('no aplica') ||
         feedbackLower.includes('n/a') ||
-        
         comentarioLower.includes('no aplica') ||
         comentarioLower.includes('n/a') ||
-        
         estadoLower === 'n/a' ||
         estadoLower === 'na' ||
         estadoLower === 'no aplica' ||
@@ -1917,10 +1899,7 @@ function esNoAplica(respuesta) {
 
 async function buscarSkapILC(codigoEmpleado) {
     try {
-        console.log(`🔍 Buscando SKAP ILC para código: ${codigoEmpleado}`);
-        
         const codigoBusqueda = codigoEmpleado.trim();
-        console.log(`Buscando código ILC: "${codigoBusqueda}"`);
         
         const databaseUrl = FIREBASE_CONFIG_ILC.databaseURL;
         
@@ -1932,10 +1911,7 @@ async function buscarSkapILC(codigoEmpleado) {
         
         if (!usuarios) {
             return `❌ *NO ENCONTRADO - ILC*\n\n` +
-                   `No hay usuarios registrados en la base de datos ILC.\n\n` +
-                   `🔍 *Verifica:*\n` +
-                   `• Que la base de datos tenga información\n` +
-                   `• Contacta al administrador`;
+                   `No hay usuarios registrados en la base de datos ILC.`;
         }
         
         let usuarioEncontrado = null;
@@ -1947,14 +1923,11 @@ async function buscarSkapILC(codigoEmpleado) {
             if (usuario.carnet && usuario.carnet.toString().trim() === codigoBusqueda) {
                 usuarioEncontrado = usuario;
                 usuarioIdEncontrado = usuarioId;
-                console.log(`✅ Coincidencia exacta encontrada en carnet: ${usuario.carnet}`);
                 break;
             }
         }
         
         if (!usuarioEncontrado) {
-            console.log(`🔍 Buscando coincidencias parciales para: ${codigoBusqueda}`);
-            
             for (const usuarioId in usuarios) {
                 const usuario = usuarios[usuarioId];
                 
@@ -1965,7 +1938,6 @@ async function buscarSkapILC(codigoEmpleado) {
                     if (usuario[campo] && usuario[campo].toString().includes(codigoBusqueda)) {
                         usuarioEncontrado = usuario;
                         usuarioIdEncontrado = usuarioId;
-                        console.log(`✅ Coincidencia parcial encontrada en campo ${campo}: ${usuario[campo]}`);
                         encontrado = true;
                         break;
                     }
@@ -1976,15 +1948,6 @@ async function buscarSkapILC(codigoEmpleado) {
                 if (usuario.nombre && usuario.nombre.toString().toLowerCase().includes(codigoBusqueda.toLowerCase())) {
                     usuarioEncontrado = usuario;
                     usuarioIdEncontrado = usuarioId;
-                    console.log(`✅ Coincidencia encontrada en nombre: ${usuario.nombre}`);
-                    break;
-                }
-                
-                const usuarioStr = JSON.stringify(usuario).toLowerCase();
-                if (usuarioStr.includes(codigoBusqueda.toLowerCase())) {
-                    usuarioEncontrado = usuario;
-                    usuarioIdEncontrado = usuarioId;
-                    console.log(`✅ Coincidencia general en datos del usuario`);
                     break;
                 }
             }
@@ -1993,16 +1956,8 @@ async function buscarSkapILC(codigoEmpleado) {
         if (!usuarioEncontrado) {
             return `❌ *NO ENCONTRADO - ILC*\n\n` +
                    `El código *${codigoBusqueda}* no fue encontrado en la base de datos ILC.\n\n` +
-                   `🔍 *Sugerencias:*\n` +
-                   `• Verifica que el código sea correcto\n` +
-                   `• Intenta con el código completo (ej: 76009949)\n` +
-                   `• Intenta con solo los últimos dígitos (ej: 9949)\n` +
-                   `• Revisa directamente: https://skapjarabe.web.app/usuario.html\n\n` +
-                   `📞 *Para más información:*\n` +
-                   `Contacta al supervisor del área`;
+                   `🔍 *Revisa directamente:* https://skapjarabe.web.app/usuario.html`;
         }
-        
-        console.log(`✅ Usuario encontrado: ${usuarioEncontrado.nombre || 'Sin nombre'} (Carnet: ${usuarioEncontrado.carnet || 'Sin carnet'})`);
         
         let respuestas = {};
         try {
@@ -2018,10 +1973,7 @@ async function buscarSkapILC(codigoEmpleado) {
                 }
             }
             respuestas = respuestasUsuario;
-            console.log(`📊 Respuestas encontradas: ${Object.keys(respuestas).length}`);
-        } catch (error) {
-            console.log("No se pudieron obtener respuestas:", error.message);
-        }
+        } catch (error) {}
         
         let preguntas = {};
         try {
@@ -2029,10 +1981,7 @@ async function buscarSkapILC(codigoEmpleado) {
                 timeout: 10000
             });
             preguntas = preguntasResponse.data || {};
-            console.log(`📝 Preguntas encontradas: ${Object.keys(preguntas).length}`);
-        } catch (error) {
-            console.log("No se pudieron obtener preguntas:", error.message);
-        }
+        } catch (error) {}
         
         let habilidadesAvanzadas = [];
         let habilidadesIntermedias = [];
@@ -2046,8 +1995,7 @@ async function buscarSkapILC(codigoEmpleado) {
                 const pregunta = preguntas[preguntaId];
                 
                 if (pregunta.tipoHabilidad === 'Habilidades avanzadas' || 
-                    pregunta.tipoHabilidad?.includes('avanzada') || 
-                    pregunta.categoria?.includes('avanzada')) {
+                    pregunta.tipoHabilidad?.includes('avanzada')) {
                     habilidadesAvanzadas.push({
                         pregunta: pregunta.texto || pregunta.pregunta || 'Sin texto',
                         feedback: respuesta.feedback || 'unknown',
@@ -2055,13 +2003,10 @@ async function buscarSkapILC(codigoEmpleado) {
                         aprobada: respuesta.feedback === 'thumbs-up' || respuesta.estado === 'aprobado',
                         esNoAplica: esNoAplica(respuesta),
                         pilar: pregunta.pilar || 'Sin pilar',
-                        criterioCierre: pregunta.criterioCierre || 'Sin criterio',
-                        fechaApertura: respuesta.fechaApertura || respuesta.fecha || '',
-                        fechaRegistro: respuesta.fecha || respuesta.fechaRegistro || ''
+                        criterioCierre: pregunta.criterioCierre || 'Sin criterio'
                     });
                 } else if (pregunta.tipoHabilidad === 'Habilidades intermedias' || 
-                          pregunta.tipoHabilidad?.includes('intermedia') || 
-                          pregunta.categoria?.includes('intermedia')) {
+                          pregunta.tipoHabilidad?.includes('intermedia')) {
                     habilidadesIntermedias.push({
                         pregunta: pregunta.texto || pregunta.pregunta || 'Sin texto',
                         feedback: respuesta.feedback || 'unknown',
@@ -2069,13 +2014,10 @@ async function buscarSkapILC(codigoEmpleado) {
                         aprobada: respuesta.feedback === 'thumbs-up' || respuesta.estado === 'aprobado',
                         esNoAplica: esNoAplica(respuesta),
                         pilar: pregunta.pilar || 'Sin pilar',
-                        criterioCierre: pregunta.criterioCierre || 'Sin criterio',
-                        fechaApertura: respuesta.fechaApertura || respuesta.fecha || '',
-                        fechaRegistro: respuesta.fecha || respuesta.fechaRegistro || ''
+                        criterioCierre: pregunta.criterioCierre || 'Sin criterio'
                     });
                 } else if (pregunta.tipoHabilidad === 'Licencia para operar' || 
-                          pregunta.tipoHabilidad?.includes('licencia') || 
-                          pregunta.categoria?.includes('licencia')) {
+                          pregunta.tipoHabilidad?.includes('licencia')) {
                     licenciaOperar.push({
                         pregunta: pregunta.texto || pregunta.pregunta || 'Sin texto',
                         feedback: respuesta.feedback || 'unknown',
@@ -2083,9 +2025,7 @@ async function buscarSkapILC(codigoEmpleado) {
                         aprobada: respuesta.feedback === 'thumbs-up' || respuesta.estado === 'aprobado',
                         esNoAplica: esNoAplica(respuesta),
                         pilar: pregunta.pilar || 'Sin pilar',
-                        criterioCierre: pregunta.criterioCierre || 'Sin criterio',
-                        fechaApertura: respuesta.fechaApertura || respuesta.fecha || '',
-                        fechaRegistro: respuesta.fecha || respuesta.fechaRegistro || ''
+                        criterioCierre: pregunta.criterioCierre || 'Sin criterio'
                     });
                 }
             }
@@ -2104,14 +2044,6 @@ async function buscarSkapILC(codigoEmpleado) {
         const porcentajeLicencia = licenciaOperarAplicables.length > 0 ? 
             Math.round((licenciaOperarAplicables.filter(h => h.aprobada).length / licenciaOperarAplicables.length) * 100) : 0;
         
-        const noAplicaAvanzadas = habilidadesAvanzadas.filter(h => h.esNoAplica).length;
-        const noAplicaIntermedias = habilidadesIntermedias.filter(h => h.esNoAplica).length;
-        const noAplicaLicencia = licenciaOperar.filter(h => h.esNoAplica).length;
-        
-        const reprobadasAvanzadas = habilidadesAvanzadas.filter(h => !h.aprobada && !h.esNoAplica);
-        const reprobadasIntermedias = habilidadesIntermedias.filter(h => !h.aprobada && !h.esNoAplica);
-        const reprobadasLicencia = licenciaOperar.filter(h => !h.aprobada && !h.esNoAplica);
-        
         let resultado = `📋 *INFORMACIÓN SKAP - ILC*\n\n`;
         resultado += `🔢 *Código:* ${usuarioEncontrado.carnet || codigoBusqueda}\n`;
         resultado += `👤 *Nombre:* ${usuarioEncontrado.nombre || 'No disponible'}\n`;
@@ -2119,111 +2051,19 @@ async function buscarSkapILC(codigoEmpleado) {
         if (usuarioEncontrado.area) {
             resultado += `🏭 *Área:* ${usuarioEncontrado.area}\n`;
         }
-        if (usuarioEncontrado.areas && Array.isArray(usuarioEncontrado.areas)) {
-            resultado += `📌 *Áreas:* ${usuarioEncontrado.areas.join(', ')}\n`;
-        }
-        if (usuarioEncontrado.departamento) {
-            resultado += `🏢 *Departamento:* ${usuarioEncontrado.departamento}\n`;
-        }
         if (usuarioEncontrado.puesto) {
             resultado += `💼 *Puesto:* ${usuarioEncontrado.puesto}\n`;
         }
         
         resultado += `\n📊 *ESTADÍSTICAS GENERALES:*\n`;
         resultado += `• Habilidades avanzadas: ${habilidadesAvanzadas.length} evaluaciones\n`;
-        if (noAplicaAvanzadas > 0) {
-            resultado += `  (${noAplicaAvanzadas} N/A - ${habilidadesAvanzadasAplicables.length} aplicables)\n`;
-        }
-        
         resultado += `• Habilidades intermedias: ${habilidadesIntermedias.length} evaluaciones\n`;
-        if (noAplicaIntermedias > 0) {
-            resultado += `  (${noAplicaIntermedias} N/A - ${habilidadesIntermediasAplicables.length} aplicables)\n`;
-        }
+        resultado += `• Licencia para operar: ${licenciaOperar.length} evaluaciones\n\n`;
         
-        resultado += `• Licencia para operar: ${licenciaOperar.length} evaluaciones\n`;
-        if (noAplicaLicencia > 0) {
-            resultado += `  (${noAplicaLicencia} N/A - ${licenciaOperarAplicables.length} aplicables)\n`;
-        }
-        
-        resultado += `\n🎯 *PORCENTAJES DE APROBACIÓN (excluyendo N/A):*\n`;
-        resultado += `• Habilidades avanzadas: ${porcentajeAvanzadas}% (${habilidadesAvanzadasAplicables.filter(h => h.aprobada).length}/${habilidadesAvanzadasAplicables.length})\n`;
-        resultado += `• Habilidades intermedias: ${porcentajeIntermedias}% (${habilidadesIntermediasAplicables.filter(h => h.aprobada).length}/${habilidadesIntermediasAplicables.length})\n`;
-        resultado += `• Licencia para operar: ${porcentajeLicencia}% (${licenciaOperarAplicables.filter(h => h.aprobada).length}/${licenciaOperarAplicables.length})\n`;
-        
-        if (reprobadasAvanzadas.length > 0 || reprobadasIntermedias.length > 0 || reprobadasLicencia.length > 0) {
-            resultado += `\n❌ *EVALUACIONES REPROBADAS:*\n`;
-            
-            if (reprobadasAvanzadas.length > 0) {
-                resultado += `\n🔴 *HABILIDADES AVANZADAS (${reprobadasAvanzadas.length}):*\n`;
-                reprobadasAvanzadas.forEach((repro, index) => {
-                    resultado += `\n${index + 1}. 📝 *Pregunta:* ${repro.pregunta.substring(0, 80)}${repro.pregunta.length > 80 ? '...' : ''}\n`;
-                    resultado += `   📌 *Pilar:* ${repro.pilar}\n`;
-                    resultado += `   📋 *Criterio:* ${repro.criterioCierre}\n`;
-                    if (repro.fechaApertura) {
-                        const fechaApertura = moment(repro.fechaApertura).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                        resultado += `   📅 *Fecha apertura:* ${fechaApertura}\n`;
-                    } else if (repro.fechaRegistro) {
-                        const fechaRegistro = moment(repro.fechaRegistro).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                        resultado += `   📅 *Fecha registro:* ${fechaRegistro}\n`;
-                    }
-                    if (repro.comentario && repro.comentario.trim() !== '') {
-                        resultado += `   💬 *Comentario:* ${repro.comentario.substring(0, 60)}${repro.comentario.length > 60 ? '...' : ''}\n`;
-                    }
-                });
-            }
-            
-            if (reprobadasIntermedias.length > 0) {
-                resultado += `\n🟠 *HABILIDADES INTERMEDIAS (${reprobadasIntermedias.length}):*\n`;
-                reprobadasIntermedias.forEach((repro, index) => {
-                    resultado += `\n${index + 1}. 📝 *Pregunta:* ${repro.pregunta.substring(0, 80)}${repro.pregunta.length > 80 ? '...' : ''}\n`;
-                    resultado += `   📌 *Pilar:* ${repro.pilar}\n`;
-                    resultado += `   📋 *Criterio:* ${repro.criterioCierre}\n`;
-                    if (repro.fechaApertura) {
-                        const fechaApertura = moment(repro.fechaApertura).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                        resultado += `   📅 *Fecha apertura:* ${fechaApertura}\n`;
-                    } else if (repro.fechaRegistro) {
-                        const fechaRegistro = moment(repro.fechaRegistro).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                        resultado += `   📅 *Fecha registro:* ${fechaRegistro}\n`;
-                    }
-                    if (repro.comentario && repro.comentario.trim() !== '') {
-                        resultado += `   💬 *Comentario:* ${repro.comentario.substring(0, 60)}${repro.comentario.length > 60 ? '...' : ''}\n`;
-                    }
-                });
-            }
-            
-            if (reprobadasLicencia.length > 0) {
-                resultado += `\n🟢 *LICENCIA PARA OPERAR (${reprobadasLicencia.length}):*\n`;
-                reprobadasLicencia.forEach((repro, index) => {
-                    resultado += `\n${index + 1}. 📝 *Pregunta:* ${repro.pregunta.substring(0, 80)}${repro.pregunta.length > 80 ? '...' : ''}\n`;
-                    resultado += `   📌 *Pilar:* ${repro.pilar}\n`;
-                    resultado += `   📋 *Criterio:* ${repro.criterioCierre}\n`;
-                    if (repro.fechaApertura) {
-                        const fechaApertura = moment(repro.fechaApertura).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                        resultado += `   📅 *Fecha apertura:* ${fechaApertura}\n`;
-                    } else if (repro.fechaRegistro) {
-                        const fechaRegistro = moment(repro.fechaRegistro).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                        resultado += `   📅 *Fecha registro:* ${fechaRegistro}\n`;
-                    }
-                    if (repro.comentario && repro.comentario.trim() !== '') {
-                        resultado += `   💬 *Comentario:* ${repro.comentario.substring(0, 60)}${repro.comentario.length > 60 ? '...' : ''}\n`;
-                    }
-                });
-            }
-        } else {
-            resultado += `\n✅ *¡FELICIDADES!* No tienes evaluaciones reprobadas.\n`;
-            resultado += `Todas tus evaluaciones están aprobadas o no aplican.\n`;
-        }
-        
-        resultado += `\n📈 *ESTADO GENERAL:*\n`;
-        if (licenciaOperarAplicables.length === 0) {
-            resultado += `📝 *SIN EVALUACIONES APLICABLES*\n`;
-        } else if (porcentajeLicencia >= 80) {
-            resultado += `✅ *LICENCIA COMPLETA* - Listo para operar\n`;
-        } else if (porcentajeLicencia >= 50) {
-            resultado += `⚠️ *LICENCIA PARCIAL* - Necesita más evaluaciones\n`;
-        } else {
-            resultado += `❌ *LICENCIA INCOMPLETA* - Requiere capacitación\n`;
-        }
+        resultado += `🎯 *PORCENTAJES DE APROBACIÓN:*\n`;
+        resultado += `• Habilidades avanzadas: ${porcentajeAvanzadas}%\n`;
+        resultado += `• Habilidades intermedias: ${porcentajeIntermedias}%\n`;
+        resultado += `• Licencia para operar: ${porcentajeLicencia}%\n`;
         
         resultado += `\n⏰ *Consulta:* ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
         resultado += `🔗 *Fuente:* Base de datos ILC`;
@@ -2231,26 +2071,10 @@ async function buscarSkapILC(codigoEmpleado) {
         return resultado;
         
     } catch (error) {
-        console.error("Error detallado en buscarSkapILC:", error.message);
-        console.error(error.stack);
-        
         let mensajeError = "❌ *ERROR EN CONSULTA SKAP ILC*\n\n";
         mensajeError += `No se pudo realizar la búsqueda para el código: ${codigoEmpleado}\n\n`;
         mensajeError += "🔗 *Enlace:* https://skapjarabe.web.app/usuario.html\n";
         mensajeError += "⏰ *Hora:* " + moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm') + "\n\n";
-        
-        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-            mensajeError += "💡 *Causa:* No se pudo conectar a la base de datos\n";
-            mensajeError += "• Verifica tu conexión a internet\n";
-            mensajeError += "• El servidor puede estar temporalmente fuera de línea\n";
-        } else if (error.response) {
-            mensajeError += `💡 *Causa:* Error ${error.response.status}\n`;
-            mensajeError += `• El servidor respondió con error\n`;
-        } else {
-            mensajeError += `💡 *Causa:* ${error.message}\n`;
-        }
-        
-        mensajeError += "\n📞 *Contacta a Tu supervisor para más información*";
         
         return mensajeError;
     }
@@ -2258,10 +2082,7 @@ async function buscarSkapILC(codigoEmpleado) {
 
 async function buscarSkapOUTS(codigoEmpleado) {
     try {
-        console.log(`🔍 Buscando SKAP OUTS para código: ${codigoEmpleado}`);
-        
         const codigoBusqueda = codigoEmpleado.trim();
-        console.log(`Buscando código OUTS: "${codigoBusqueda}"`);
         
         const databaseUrl = FIREBASE_CONFIG_OUTS.databaseURL;
         
@@ -2273,10 +2094,7 @@ async function buscarSkapOUTS(codigoEmpleado) {
         
         if (!usuarios) {
             return `❌ *NO ENCONTRADO - OUTS*\n\n` +
-                   `No hay usuarios registrados en la base de datos OUTS.\n\n` +
-                   `🔍 *Verifica:*\n` +
-                   `• Que la base de datos tenga información\n` +
-                   `• Contacta al administrador`;
+                   `No hay usuarios registrados en la base de datos OUTS.`;
         }
         
         let usuarioEncontrado = null;
@@ -2288,14 +2106,11 @@ async function buscarSkapOUTS(codigoEmpleado) {
             if (usuario.carnet && usuario.carnet.toString().trim() === codigoBusqueda) {
                 usuarioEncontrado = usuario;
                 usuarioIdEncontrado = usuarioId;
-                console.log(`✅ Coincidencia exacta encontrada en carnet: ${usuario.carnet}`);
                 break;
             }
         }
         
         if (!usuarioEncontrado) {
-            console.log(`🔍 Buscando coincidencias parciales para: ${codigoBusqueda}`);
-            
             for (const usuarioId in usuarios) {
                 const usuario = usuarios[usuarioId];
                 
@@ -2306,7 +2121,6 @@ async function buscarSkapOUTS(codigoEmpleado) {
                     if (usuario[campo] && usuario[campo].toString().includes(codigoBusqueda)) {
                         usuarioEncontrado = usuario;
                         usuarioIdEncontrado = usuarioId;
-                        console.log(`✅ Coincidencia parcial encontrada en campo ${campo}: ${usuario[campo]}`);
                         encontrado = true;
                         break;
                     }
@@ -2317,15 +2131,6 @@ async function buscarSkapOUTS(codigoEmpleado) {
                 if (usuario.nombre && usuario.nombre.toString().toLowerCase().includes(codigoBusqueda.toLowerCase())) {
                     usuarioEncontrado = usuario;
                     usuarioIdEncontrado = usuarioId;
-                    console.log(`✅ Coincidencia encontrada en nombre: ${usuario.nombre}`);
-                    break;
-                }
-                
-                const usuarioStr = JSON.stringify(usuario).toLowerCase();
-                if (usuarioStr.includes(codigoBusqueda.toLowerCase())) {
-                    usuarioEncontrado = usuario;
-                    usuarioIdEncontrado = usuarioId;
-                    console.log(`✅ Coincidencia general en datos del usuario`);
                     break;
                 }
             }
@@ -2334,16 +2139,8 @@ async function buscarSkapOUTS(codigoEmpleado) {
         if (!usuarioEncontrado) {
             return `❌ *NO ENCONTRADO - OUTS*\n\n` +
                    `El código *${codigoBusqueda}* no fue encontrado en la base de datos OUTS.\n\n` +
-                   `🔍 *Sugerencias:*\n` +
-                   `• Verifica que el código sea correcto\n` +
-                   `• Intenta con el código completo (ej: 20120638)\n` +
-                   `• Intenta con solo los últimos dígitos (ej: 0638)\n` +
-                   `• Revisa directamente: https://skapjarabe.web.app/usuario2.html\n\n` +
-                   `📞 *Para más información:*\n` +
-                   `Contacta a *tu supervisor de turno*`;
+                   `🔍 *Revisa directamente:* https://skapjarabe.web.app/usuario2.html`;
         }
-        
-        console.log(`✅ Usuario encontrado: ${usuarioEncontrado.nombre || 'Sin nombre'} (Carnet: ${usuarioEncontrado.carnet || 'Sin carnet'})`);
         
         let respuestas = {};
         try {
@@ -2359,10 +2156,7 @@ async function buscarSkapOUTS(codigoEmpleado) {
                 }
             }
             respuestas = respuestasUsuario;
-            console.log(`📊 Respuestas encontradas: ${Object.keys(respuestas).length}`);
-        } catch (error) {
-            console.log("No se pudieron obtener respuestas:", error.message);
-        }
+        } catch (error) {}
         
         let preguntas = {};
         try {
@@ -2370,10 +2164,7 @@ async function buscarSkapOUTS(codigoEmpleado) {
                 timeout: 10000
             });
             preguntas = preguntasResponse.data || {};
-            console.log(`📝 Preguntas encontradas: ${Object.keys(preguntas).length}`);
-        } catch (error) {
-            console.log("No se pudieron obtener preguntas:", error.message);
-        }
+        } catch (error) {}
         
         let licenciaOperar = [];
         
@@ -2385,44 +2176,14 @@ async function buscarSkapOUTS(codigoEmpleado) {
                 const pregunta = preguntas[preguntaId];
                 
                 if (pregunta.tipoHabilidad === 'Licencia para operar' || 
-                    pregunta.tipoHabilidad?.includes('licencia') || 
-                    pregunta.categoria?.includes('licencia') ||
-                    pregunta.tipo === 'licencia') {
+                    pregunta.tipoHabilidad?.includes('licencia')) {
                     licenciaOperar.push({
                         pregunta: pregunta.texto || pregunta.pregunta || 'Sin texto',
                         feedback: respuesta.feedback || 'unknown',
                         comentario: respuesta.comentario || '',
-                        aprobada: respuesta.feedback === 'thumbs-up' || respuesta.estado === 'aprobado' || respuesta.aprobada === true,
+                        aprobada: respuesta.feedback === 'thumbs-up' || respuesta.estado === 'aprobado',
                         esNoAplica: esNoAplica(respuesta),
-                        pilar: pregunta.pilar || 'Sin pilar',
-                        criterioCierre: pregunta.criterioCierre || 'Sin criterio',
-                        fechaApertura: respuesta.fechaApertura || respuesta.fechaInicio || '',
-                        fechaCierre: respuesta.fechaCierre || respuesta.fechaFin || '',
-                        evaluador: respuesta.evaluador || ''
-                    });
-                }
-            }
-        }
-        
-        if (licenciaOperar.length === 0 && Object.keys(respuestas).length > 0) {
-            console.log("⚠️ No se encontraron licencias específicas, mostrando todas las respuestas como licencias");
-            for (const respuestaId in respuestas) {
-                const respuesta = respuestas[respuestaId];
-                const preguntaId = respuesta.preguntaId;
-                
-                if (preguntas[preguntaId]) {
-                    const pregunta = preguntas[preguntaId];
-                    licenciaOperar.push({
-                        pregunta: pregunta.texto || pregunta.pregunta || 'Sin texto',
-                        feedback: respuesta.feedback || 'unknown',
-                        comentario: respuesta.comentario || '',
-                        aprobada: respuesta.feedback === 'thumbs-up' || respuesta.estado === 'aprobado' || respuesta.aprobada === true,
-                        esNoAplica: esNoAplica(respuesta),
-                        pilar: pregunta.pilar || 'Sin pilar',
-                        criterioCierre: pregunta.criterioCierre || 'Sin criterio',
-                        fechaApertura: respuesta.fechaApertura || respuesta.fechaInicio || '',
-                        fechaCierre: respuesta.fechaCierre || respuesta.fechaFin || '',
-                        evaluador: respuesta.evaluador || ''
+                        pilar: pregunta.pilar || 'Sin pilar'
                     });
                 }
             }
@@ -2433,10 +2194,6 @@ async function buscarSkapOUTS(codigoEmpleado) {
         const porcentajeLicencia = licenciaOperarAplicables.length > 0 ? 
             Math.round((licenciaOperarAplicables.filter(h => h.aprobada).length / licenciaOperarAplicables.length) * 100) : 0;
         
-        const noAplicaLicencia = licenciaOperar.filter(h => h.esNoAplica).length;
-        
-        const reprobadasLicencia = licenciaOperar.filter(h => !h.aprobada && !h.esNoAplica);
-        
         let resultado = `📋 *INFORMACIÓN SKAP - OUTS*\n\n`;
         resultado += `🔢 *Código:* ${usuarioEncontrado.carnet || codigoBusqueda}\n`;
         resultado += `👤 *Nombre:* ${usuarioEncontrado.nombre || 'No disponible'}\n`;
@@ -2444,70 +2201,15 @@ async function buscarSkapOUTS(codigoEmpleado) {
         if (usuarioEncontrado.area) {
             resultado += `🏭 *Área:* ${usuarioEncontrado.area}\n`;
         }
-        if (usuarioEncontrado.areas && Array.isArray(usuarioEncontrado.areas)) {
-            resultado += `📌 *Áreas:* ${usuarioEncontrado.areas.join(', ')}\n`;
-        }
-        if (usuarioEncontrado.departamento) {
-            resultado += `🏢 *Departamento:* ${usuarioEncontrado.departamento}\n`;
-        }
         if (usuarioEncontrado.puesto) {
             resultado += `💼 *Puesto:* ${usuarioEncontrado.puesto}\n`;
         }
         
         resultado += `\n📊 *ESTADÍSTICAS DE LICENCIA:*\n`;
         resultado += `• Total evaluaciones: ${licenciaOperar.length}\n`;
-        if (noAplicaLicencia > 0) {
-            resultado += `  (${noAplicaLicencia} N/A - ${licenciaOperarAplicables.length} aplicables)\n`;
-        }
         resultado += `• Aprobadas: ${licenciaOperarAplicables.filter(h => h.aprobada).length}\n`;
         resultado += `• Pendientes: ${licenciaOperarAplicables.filter(h => !h.aprobada).length}\n`;
-        resultado += `• Porcentaje de aprobación (excluyendo N/A): ${porcentajeLicencia}%\n`;
-        
-        if (reprobadasLicencia.length > 0) {
-            resultado += `\n❌ *LICENCIAS REPROBADAS (${reprobadasLicencia.length}):*\n`;
-            reprobadasLicencia.forEach((repro, index) => {
-                resultado += `\n${index + 1}. 📝 *Pregunta:* ${repro.pregunta.substring(0, 80)}${repro.pregunta.length > 80 ? '...' : ''}\n`;
-                resultado += `   📌 *Pilar:* ${repro.pilar}\n`;
-                resultado += `   📋 *Criterio:* ${repro.criterioCierre}\n`;
-                
-                if (repro.fechaApertura) {
-                    const fechaApertura = moment(repro.fechaApertura).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                    resultado += `   📅 *Fecha apertura:* ${fechaApertura}\n`;
-                } else if (repro.fechaRegistro) {
-                    const fechaRegistro = moment(repro.fechaRegistro).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                    resultado += `   📅 *Fecha registro:* ${fechaRegistro}\n`;
-                }
-                
-                if (repro.fechaCierre) {
-                    const fechaCierre = moment(repro.fechaCierre).tz(TIMEZONE).format('DD/MM/YYYY HH:mm');
-                    resultado += `   📅 *Fecha cierre:* ${fechaCierre}\n`;
-                }
-                
-                if (repro.evaluador) {
-                    resultado += `   👤 *Evaluador:* ${repro.evaluador}\n`;
-                }
-                
-                if (repro.comentario && repro.comentario.trim() !== '') {
-                    resultado += `   💬 *Comentario:* ${repro.comentario.substring(0, 60)}${repro.comentario.length > 60 ? '...' : ''}\n`;
-                }
-            });
-        } else {
-            resultado += `\n✅ *¡FELICIDADES!* No tienes licencias reprobadas.\n`;
-            resultado += `Todas tus evaluaciones están aprobadas o no aplican.\n`;
-        }
-        
-        resultado += `\n📈 *ESTADO DE LICENCIA:*\n`;
-        if (licenciaOperarAplicables.length === 0) {
-            resultado += `📝 *SIN EVALUACIONES APLICABLES*\n`;
-        } else if (porcentajeLicencia >= 80 && licenciaOperarAplicables.length >= 3) {
-            resultado += `✅ *LICENCIA COMPLETA* - Autorizado para operar\n`;
-        } else if (porcentajeLicencia >= 50) {
-            resultado += `⚠️ *LICENCIA PARCIAL* - Requiere supervisión\n`;
-        } else if (licenciaOperarAplicables.length > 0) {
-            resultado += `❌ *LICENCIA INCOMPLETA* - No autorizado para operar\n`;
-        } else {
-            resultado += `📝 *SIN EVALUACIONES APLICABLES* - Requiere evaluación inicial\n`;
-        }
+        resultado += `• Porcentaje de aprobación: ${porcentajeLicencia}%\n`;
         
         resultado += `\n⏰ *Consulta:* ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
         resultado += `🔗 *Fuente:* Base de datos OUTS`;
@@ -2515,26 +2217,10 @@ async function buscarSkapOUTS(codigoEmpleado) {
         return resultado;
         
     } catch (error) {
-        console.error("Error detallado en buscarSkapOUTS:", error.message);
-        console.error(error.stack);
-        
         let mensajeError = "❌ *ERROR EN CONSULTA SKAP OUTS*\n\n";
         mensajeError += `No se pudo realizar la búsqueda para el código: ${codigoEmpleado}\n\n`;
         mensajeError += "🔗 *Enlace:* https://skapjarabe.web.app/usuario2.html\n";
         mensajeError += "⏰ *Hora:* " + moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm') + "\n\n";
-        
-        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-            mensajeError += "💡 *Causa:* No se pudo conectar a la base de datos\n";
-            mensajeError += "• Verifica tu conexión a internet\n";
-            mensajeError += "• El servidor puede estar temporalmente fuera de línea\n";
-        } else if (error.response) {
-            mensajeError += `💡 *Causa:* Error ${error.response.status}\n`;
-            mensajeError += `• El servidor respondió con error\n`;
-        } else {
-            mensajeError += `💡 *Causa:* ${error.message}\n`;
-        }
-        
-        mensajeError += "\n📞 *Contacta al supervisor de turno para más información*";
         
         return mensajeError;
     }
@@ -2597,19 +2283,17 @@ async function manejarCredenciales(message, userId, estadoUsuario) {
             await message.reply(
                 "✅ *Credenciales correctas*\n\n" +
                 "¿Qué tipo de contenido deseas programar?\n\n" +
-                "1️⃣ - Imagen (JPG, PNG, GIF)\n" +
-                "2️⃣ - Video (MP4, AVI, MOV)\n" +
-                "3️⃣ - Documento (PDF, DOCX)\n" +
-                "4️⃣ - Solo texto (sin archivo adjunto)\n\n" +
+                "1️⃣ - Imagen\n" +
+                "2️⃣ - Video\n" +
+                "3️⃣ - Documento\n" +
+                "4️⃣ - Solo texto\n\n" +
                 "Envía el número de la opción (1-4)"
             );
         } else {
             await message.reply(
                 "❌ *Credenciales incorrectas*\n\n" +
-                "Lo sentimos, tus credenciales no son correctas.\n\n" +
                 "Por favor ingresa de nuevo las credenciales.\n" +
-                "Formato: usuario:contraseña\n\n" +
-                "O envía *cancelar* para regresar al menú."
+                "Formato: usuario:contraseña"
             );
         }
     } else {
@@ -2627,8 +2311,7 @@ async function manejarTipoContenido(message, userId, estadoUsuario) {
         
         await message.reply(
             "📸 *PROGRAMAR IMAGEN*\n\n" +
-            "Ahora envía la imagen que deseas programar:\n" +
-            "(Puede ser una foto, imagen, sticker, etc.)\n\n" +
+            "Ahora envía la imagen que deseas programar:\n\n" +
             "O envía *omitir* para programar solo texto."
         );
         
@@ -2639,8 +2322,7 @@ async function manejarTipoContenido(message, userId, estadoUsuario) {
         
         await message.reply(
             "🎬 *PROGRAMAR VIDEO*\n\n" +
-            "Ahora envía el video que deseas programar:\n" +
-            "(Formatos soportados: MP4, AVI, MOV)\n\n" +
+            "Ahora envía el video que deseas programar:\n\n" +
             "O envía *omitir* para programar solo texto."
         );
         
@@ -2651,8 +2333,7 @@ async function manejarTipoContenido(message, userId, estadoUsuario) {
         
         await message.reply(
             "📄 *PROGRAMAR DOCUMENTO*\n\n" +
-            "Ahora envía el documento que deseas programar:\n" +
-            "(Formatos soportados: PDF, DOCX)\n\n" +
+            "Ahora envía el documento que deseas programar:\n\n" +
             "O envía *omitir* para programar solo texto."
         );
         
@@ -2697,8 +2378,6 @@ async function manejarArchivo(message, userId, estadoUsuario) {
                     tipo = 'imagen';
                 } else if (media.mimetype.includes('video')) {
                     tipo = 'video';
-                } else if (media.mimetype.includes('pdf') || media.mimetype.includes('document')) {
-                    tipo = 'documento';
                 } else {
                     tipo = 'documento';
                 }
@@ -2717,10 +2396,10 @@ async function manejarArchivo(message, userId, estadoUsuario) {
                 "O envía *omitir* si solo quieres enviar el archivo sin texto."
             );
         } catch (error) {
-            await message.reply("❌ Error al procesar el archivo. Intenta nuevamente.");
+            await message.reply("❌ Error al procesar el archivo.");
         }
     } else if (texto !== 'omitir') {
-        await message.reply("❌ No se detectó ningún archivo. Por favor envía un archivo o escribe *omitir*.");
+        await message.reply("❌ No se detectó ningún archivo.");
     }
 }
 
@@ -2757,11 +2436,7 @@ async function manejarCantidadHoras(message, userId, estadoUsuario) {
         await message.reply(
             "⏰ *PROGRAMAR 1 HORA*\n\n" +
             "Envía la hora en la que quieres que se envíe el mensaje.\n\n" +
-            "*Ejemplos:*\n" +
-            "• 06:00\n" +
-            "• 8:30 am\n" +
-            "• 18:00 pm\n" +
-            "• 9:00"
+            "*Ejemplos:* 06:00, 8:30 am, 18:00"
         );
         
     } else if (opcion === '2') {
@@ -2771,13 +2446,8 @@ async function manejarCantidadHoras(message, userId, estadoUsuario) {
         
         await message.reply(
             "⏰ *PROGRAMAR 2 HORAS*\n\n" +
-            "Envía las 2 horas en las que quieres que se envíe el mensaje.\n\n" +
-            "*Ejemplos:*\n" +
-            "• 06:00 y 18:00\n" +
-            "• 06:00 am y 18:00 pm\n" +
-            "• 8:30 y 16:45\n" +
-            "• 9:00 am y 5:00 pm\n\n" +
-            "Siempre separa las dos horas con la palabra *y*"
+            "Envía las 2 horas separadas por 'y'.\n\n" +
+            "*Ejemplo:* 06:00 y 18:00"
         );
         
     } else if (opcion === '3') {
@@ -2787,16 +2457,12 @@ async function manejarCantidadHoras(message, userId, estadoUsuario) {
         
         await message.reply(
             "⏰ *PROGRAMAR 3 HORAS*\n\n" +
-            "Envía las 3 horas en las que quieres que se envíe el mensaje.\n\n" +
-            "*Ejemplos:*\n" +
-            "• 06:00, 12:00 y 18:00\n" +
-            "• 8:00 am, 12:30 pm y 17:00\n" +
-            "• 9:00, 14:00 y 19:00\n\n" +
-            "Separa las tres horas con comas y la última con 'y'"
+            "Envía las 3 horas separadas por comas y la última con 'y'.\n\n" +
+            "*Ejemplo:* 06:00, 12:00 y 18:00"
         );
         
     } else {
-        await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 3.");
+        await message.reply("❌ Opción inválida.");
     }
 }
 
@@ -2813,13 +2479,13 @@ async function manejarHoraUnica(message, userId, estadoUsuario) {
             "✅ *Hora configurada correctamente*\n\n" +
             "*Hora programada:* " + horaParseada + "\n\n" +
             "¿Con qué frecuencia quieres que se envíe?\n\n" +
-            "1️⃣ - *Una sola vez* (mañana a esta hora)\n" +
-            "2️⃣ - *Diariamente* (todos los días)\n" +
-            "3️⃣ - *Personalizado* (elegir fechas inicio/fin)\n\n" +
+            "1️⃣ - *Una sola vez*\n" +
+            "2️⃣ - *Diariamente*\n" +
+            "3️⃣ - *Personalizado*\n\n" +
             "Envía el número de la opción (1-3)"
         );
     } else {
-        await message.reply(`❌ Formato de hora inválido: "${horaStr}"\n\nUsa formato HH:MM o HH:MM am/pm`);
+        await message.reply(`❌ Formato de hora inválido.`);
     }
 }
 
@@ -2839,7 +2505,7 @@ async function manejarHorasDos(message, userId, estadoUsuario) {
         if (horaParseada) {
             horasParseadas.push(horaParseada);
         } else {
-            await message.reply(`❌ Formato de hora inválido: "${horaStr}"\n\nUsa formato HH:MM o HH:MM am/pm`);
+            await message.reply(`❌ Formato de hora inválido: "${horaStr}"`);
             return;
         }
     }
@@ -2852,9 +2518,9 @@ async function manejarHorasDos(message, userId, estadoUsuario) {
         "✅ *Horas configuradas correctamente*\n\n" +
         "*Horas programadas:* " + horasParseadas.join(' y ') + "\n\n" +
         "¿Con qué frecuencia quieres que se envíe?\n\n" +
-        "1️⃣ - *Una sola vez* (mañana a estas horas)\n" +
-        "2️⃣ - *Diariamente* (todos los días)\n" +
-        "3️⃣ - *Personalizado* (elegir fechas inicio/fin)\n\n" +
+        "1️⃣ - *Una sola vez*\n" +
+        "2️⃣ - *Diariamente*\n" +
+        "3️⃣ - *Personalizado*\n\n" +
         "Envía el número de la opción (1-3)"
     );
 }
@@ -2885,7 +2551,7 @@ async function manejarTresHoras(message, userId, estadoUsuario) {
         if (horaParseada) {
             horasParseadas.push(horaParseada);
         } else {
-            await message.reply(`❌ Formato de hora inválido: "${horaStr}"\n\nUsa formato HH:MM o HH:MM am/pm`);
+            await message.reply(`❌ Formato de hora inválido: "${horaStr}"`);
             return;
         }
     }
@@ -2898,9 +2564,9 @@ async function manejarTresHoras(message, userId, estadoUsuario) {
         "✅ *Horas configuradas correctamente*\n\n" +
         "*Horas programadas:* " + horasParseadas.join(', ') + "\n\n" +
         "¿Con qué frecuencia quieres que se envíe?\n\n" +
-        "1️⃣ - *Una sola vez* (mañana a estas horas)\n" +
-        "2️⃣ - *Diariamente* (todos los días)\n" +
-        "3️⃣ - *Personalizado* (elegir fechas inicio/fin)\n\n" +
+        "1️⃣ - *Una sola vez*\n" +
+        "2️⃣ - *Diariamente*\n" +
+        "3️⃣ - *Personalizado*\n\n" +
         "Envía el número de la opción (1-3)"
     );
 }
@@ -2919,8 +2585,8 @@ async function manejarFrecuencia(message, userId, estadoUsuario) {
         await message.reply(
             "✅ *Frecuencia configurada: Una sola vez*\n\n" +
             "¿Quieres que el mensaje se envíe a *todos* los grupos?\n\n" +
-            "1️⃣ - *Sí*, enviar a todos los grupos\n" +
-            "2️⃣ - *No*, seleccionar grupos específicos"
+            "1️⃣ - *Sí*, enviar a todos\n" +
+            "2️⃣ - *No*, seleccionar grupos"
         );
         
     } else if (opcion === '2') {
@@ -2932,8 +2598,8 @@ async function manejarFrecuencia(message, userId, estadoUsuario) {
         await message.reply(
             "✅ *Frecuencia configurada: Diariamente*\n\n" +
             "¿Quieres que el mensaje se envíe a *todos* los grupos?\n\n" +
-            "1️⃣ - *Sí*, enviar a todos los grupos\n" +
-            "2️⃣ - *No*, seleccionar grupos específicos"
+            "1️⃣ - *Sí*, enviar a todos\n" +
+            "2️⃣ - *No*, seleccionar grupos"
         );
         
     } else if (opcion === '3') {
@@ -2949,7 +2615,7 @@ async function manejarFrecuencia(message, userId, estadoUsuario) {
         );
         
     } else {
-        await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 3.");
+        await message.reply("❌ Opción inválida.");
     }
 }
 
@@ -2972,18 +2638,11 @@ async function manejarFechaInicio(message, userId, estadoUsuario) {
             fechaInicio = new Date(anio, mes, dia);
             
             if (fechaInicio.getDate() !== dia || fechaInicio.getMonth() !== mes) {
-                await message.reply("❌ Fecha inválida. Verifica el día y mes.");
-                return;
-            }
-            
-            const hoy = new Date();
-            hoy.setHours(0, 0, 0, 0);
-            if (fechaInicio < hoy) {
-                await message.reply("❌ No puedes programar para fechas pasadas.");
+                await message.reply("❌ Fecha inválida.");
                 return;
             }
         } else {
-            await message.reply("❌ Formato de fecha inválido. Usa DD/MM/YYYY");
+            await message.reply("❌ Formato de fecha inválido.");
             return;
         }
     }
@@ -3019,16 +2678,11 @@ async function manejarFechaFin(message, userId, estadoUsuario) {
             fechaFin = new Date(anio, mes, dia);
             
             if (fechaFin.getDate() !== dia || fechaFin.getMonth() !== mes) {
-                await message.reply("❌ Fecha inválida. Verifica el día y mes.");
-                return;
-            }
-            
-            if (fechaFin < estadoUsuario.datos.fechaInicio) {
-                await message.reply("❌ La fecha de fin debe ser después de la fecha de inicio.");
+                await message.reply("❌ Fecha inválida.");
                 return;
             }
         } else {
-            await message.reply("❌ Formato de fecha inválido. Usa DD/MM/YYYY o escribe *indefinido*");
+            await message.reply("❌ Formato de fecha inválido.");
             return;
         }
     }
@@ -3040,8 +2694,8 @@ async function manejarFechaFin(message, userId, estadoUsuario) {
     await message.reply(
         "✅ *Fechas configuradas correctamente*\n\n" +
         "¿Quieres que el mensaje se envíe a *todos* los grupos?\n\n" +
-        "1️⃣ - *Sí*, enviar a todos los grupos\n" +
-        "2️⃣ - *No*, seleccionar grupos específicos"
+        "1️⃣ - *Sí*, enviar a todos\n" +
+        "2️⃣ - *No*, seleccionar grupos"
     );
 }
 
@@ -3054,7 +2708,7 @@ async function manejarConfirmacionGrupos(message, userId, estadoUsuario) {
         userStates.set(userId, estadoUsuario);
         
         const preview = generarVistaPrevia(estadoUsuario.datos);
-        await message.reply(preview + "\n\n¿Deseas guardar esta programación?\n\n1️⃣ - Sí, guardar\n2️⃣ - No, cancelar");
+        await message.reply(preview + "\n\n¿Deseas guardar esta programación?\n\n1️⃣ - Sí\n2️⃣ - No");
         
     } else if (opcion === '2' || opcion.toLowerCase() === 'no') {
         estadoUsuario.datos.enviarATodos = false;
@@ -3065,9 +2719,8 @@ async function manejarConfirmacionGrupos(message, userId, estadoUsuario) {
         availableGroups = grupos;
         
         if (grupos.length === 0) {
-            await message.reply("❌ No hay grupos disponibles. El bot no está en ningún grupo.");
+            await message.reply("❌ No hay grupos disponibles.");
             userStates.delete(userId);
-            await enviarMenu(message);
             return;
         }
         
@@ -3103,7 +2756,7 @@ async function manejarSeleccionGrupos(message, userId, estadoUsuario) {
         }
         
         if (gruposValidos.length === 0) {
-            await message.reply("❌ No seleccionaste grupos válidos. Intenta nuevamente.");
+            await message.reply("❌ No seleccionaste grupos válidos.");
             return;
         }
         
@@ -3114,7 +2767,7 @@ async function manejarSeleccionGrupos(message, userId, estadoUsuario) {
     userStates.set(userId, estadoUsuario);
     
     const preview = generarVistaPrevia(estadoUsuario.datos);
-    await message.reply(preview + "\n\n*¿Deseas guardar esta programación?*\n\n1️⃣ - Sí, guardar\n2️⃣ - No, cancelar");
+    await message.reply(preview + "\n\n*¿Deseas guardar esta programación?*\n\n1️⃣ - Sí\n2️⃣ - No");
 }
 
 async function guardarProgramacion(message, userId, estadoUsuario) {
@@ -3133,44 +2786,19 @@ async function guardarProgramacion(message, userId, estadoUsuario) {
         enviosHoy: []
     };
     
-    if (estadoUsuario.datos.indiceEditar !== undefined) {
-        const programacionAntigua = scheduledMessages[estadoUsuario.datos.indiceEditar];
-        if (programacionAntigua.archivoInfo && programacionAntigua.archivoInfo.ruta !== programacion.archivoInfo?.ruta) {
-            try {
-                if (fs.existsSync(programacionAntigua.archivoInfo.ruta)) {
-                    fs.unlinkSync(programacionAntigua.archivoInfo.ruta);
-                }
-            } catch (error) {
-            }
-        }
-        
-        scheduledMessages[estadoUsuario.datos.indiceEditar] = programacion;
-    } else {
-        scheduledMessages.push(programacion);
-    }
+    scheduledMessages.push(programacion);
     
     try {
         const archivoProgramaciones = path.join(__dirname, 'programaciones.json');
         fs.writeFileSync(archivoProgramaciones, JSON.stringify(scheduledMessages, null, 2));
-    } catch (error) {
-    }
+    } catch (error) {}
     
     await message.reply(
         "✅ *PROGRAMACIÓN GUARDADA EXITOSAMENTE*\n\n" +
-        "El mensaje se enviará automáticamente a las horas especificadas.\n\n" +
-        "*Resumen:*\n" +
-        `• Horas: ${programacion.horas.join(', ')}\n` +
-        `• Frecuencia: ${programacion.frecuencia === 'una_vez' ? 'Una sola vez' : 
-                       programacion.frecuencia === 'diario' ? 'Diariamente' : 'Personalizado'}\n` +
-        `• Fecha inicio: ${moment(programacion.fechaInicio).tz(TIMEZONE).format('DD/MM/YYYY')}\n` +
-        (programacion.fechaFin ? `• Fecha fin: ${moment(programacion.fechaFin).tz(TIMEZONE).format('DD/MM/YYYY')}\n` : '') +
-        `• Grupos: ${programacion.grupos === 'todos' ? 'Todos' : programacion.grupos.length + ' grupo(s)'}\n` +
-        `• Creado: ${moment(programacion.fechaCreacion).tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n\n` +
-        "¡Gracias por usar el bot! 🚀"
+        "El mensaje se enviará automáticamente a las horas especificadas."
     );
     
     userStates.delete(userId);
-    await enviarMenu(message);
 }
 
 async function manejarOpcionExistente(message, userId, estadoUsuario) {
@@ -3182,8 +2810,7 @@ async function manejarOpcionExistente(message, userId, estadoUsuario) {
         
         let mensajeLista = "📝 *SELECCIONAR MENSAJE A EDITAR*\n\n";
         scheduledMessages.forEach((msg, index) => {
-            const mensajeCorto = msg.mensaje ? (msg.mensaje.length > 30 ? msg.mensaje.substring(0, 30) + '...' : msg.mensaje) : '(sin texto)';
-            mensajeLista += `${numeroConEmoji(index + 1)}. Horas: ${msg.horas.join(', ')} - Mensaje: ${mensajeCorto}\n`;
+            mensajeLista += `${numeroConEmoji(index + 1)}. Horas: ${msg.horas.join(', ')}\n`;
         });
         
         mensajeLista += "\nEnvía el número del mensaje que quieres editar:";
@@ -3198,7 +2825,7 @@ async function manejarOpcionExistente(message, userId, estadoUsuario) {
         
         let mensajeLista = "🗑️ *SELECCIONAR MENSAJE A ELIMINAR*\n\n";
         scheduledMessages.forEach((msg, index) => {
-            mensajeLista += `${numeroConEmoji(index + 1)}. Horas: ${msg.horas.join(', ')} - Creado: ${moment(msg.fechaCreacion).tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
+            mensajeLista += `${numeroConEmoji(index + 1)}. Horas: ${msg.horas.join(', ')}\n`;
         });
         
         mensajeLista += "\nEnvía el número del mensaje que quieres eliminar:";
@@ -3206,10 +2833,9 @@ async function manejarOpcionExistente(message, userId, estadoUsuario) {
         
     } else if (texto === '4') {
         userStates.delete(userId);
-        await message.reply("❌ Operación cancelada. Regresando al menú principal.");
-        await enviarMenu(message);
+        await message.reply("❌ Operación cancelada.");
     } else {
-        await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 4.");
+        await message.reply("❌ Opción inválida.");
     }
 }
 
@@ -3218,7 +2844,7 @@ async function manejarSeleccionEditar(message, userId, estadoUsuario) {
     const indice = parseInt(texto) - 1;
     
     if (isNaN(indice) || indice < 0 || indice >= scheduledMessages.length) {
-        await message.reply("❌ Número inválido. Intenta nuevamente.");
+        await message.reply("❌ Número inválido.");
         return;
     }
     
@@ -3227,9 +2853,7 @@ async function manejarSeleccionEditar(message, userId, estadoUsuario) {
     await message.reply(
         "🔐 *EDITAR MENSAJE PROGRAMADO*\n\n" +
         "Por favor envía tus credenciales en el formato:\n" +
-        "`usuario:contraseña`\n\n" +
-        "Ejemplo: admin:admin123\n\n" +
-        "O envía *cancelar* para regresar al menú principal."
+        "`usuario:contraseña`"
     );
     
     estadoUsuario.estado = 'esperando_credenciales_editar';
@@ -3243,7 +2867,7 @@ async function manejarSeleccionEliminar(message, userId, estadoUsuario) {
     const indice = parseInt(texto) - 1;
     
     if (isNaN(indice) || indice < 0 || indice >= scheduledMessages.length) {
-        await message.reply("❌ Número inválido. Intenta nuevamente.");
+        await message.reply("❌ Número inválido.");
         return;
     }
     
@@ -3252,9 +2876,7 @@ async function manejarSeleccionEliminar(message, userId, estadoUsuario) {
     await message.reply(
         "🔐 *ELIMINAR MENSAJE PROGRAMADO*\n\n" +
         "Por favor envía tus credenciales en el formato:\n" +
-        "`usuario:contraseña`\n\n" +
-        "Ejemplo: admin:admin123\n\n" +
-        "O envía *cancelar* para regresar al menú principal."
+        "`usuario:contraseña`"
     );
     
     estadoUsuario.estado = 'esperando_credenciales_eliminar';
@@ -3270,26 +2892,17 @@ async function eliminarProgramacion(message, userId, estadoUsuario) {
     if (programacionEliminada.archivoInfo && fs.existsSync(programacionEliminada.archivoInfo.ruta)) {
         try {
             fs.unlinkSync(programacionEliminada.archivoInfo.ruta);
-        } catch (error) {
-        }
+        } catch (error) {}
     }
     
     try {
         const archivoProgramaciones = path.join(__dirname, 'programaciones.json');
         fs.writeFileSync(archivoProgramaciones, JSON.stringify(scheduledMessages, null, 2));
-    } catch (error) {
-    }
+    } catch (error) {}
     
-    await message.reply(
-        "✅ *PROGRAMACIÓN ELIMINADA EXITOSAMENTE*\n\n" +
-        "*Mensaje eliminado:*\n" +
-        `• Horas: ${programacionEliminada.horas.join(', ')}\n` +
-        `• Fecha creación: ${moment(programacionEliminada.fechaCreacion).tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n\n` +
-        "¡Gracias por usar el bot! 🚀"
-    );
+    await message.reply("✅ *PROGRAMACIÓN ELIMINADA EXITOSAMENTE*");
     
     userStates.delete(userId);
-    await enviarMenu(message);
 }
 
 async function manejarSkapILC(message, userId) {
@@ -3300,18 +2913,9 @@ async function manejarSkapILC(message, userId) {
     
     await message.reply(
         "📋 *CONSULTA SKAP - ILC*\n\n" +
-        "Para poder revisar tus notas de SKAP, envía tu código de empleado a continuación:\n\n" +
-        "*Ejemplos de códigos ILC:*\n" +
-        "• 76001111 (código completo)\n" +
-        "• 1111 (parte del código)\n" +
-        "• 7601260\n" +
-        "• 1260\n" +
-        "• 76011111\n" +
-        "• 11111\n\n" +
-        "*📝 IMPORTANTE:*\n" +
-        "Puedes buscar con el código completo o cualquier parte que coincida.\n" +
-        "El sistema busca en todos los campos posibles.\n\n" +
-        "O envía *cancelar* para regresar al menú."
+        "Envía tu código de empleado a continuación:\n\n" +
+        "*Ejemplos:* 76001111, 1111\n\n" +
+        "O envía *cancelar* para regresar."
     );
 }
 
@@ -3323,17 +2927,9 @@ async function manejarSkapOUTS(message, userId) {
     
     await message.reply(
         "📋 *CONSULTA SKAP - OUTS*\n\n" +
-        "Para poder revisar tu licencia para operar, envía tu código de empleado a continuación:\n\n" +
-        "*Ejemplos de códigos OUTS:*\n" +
-        "• 11111111 (código completo)\n" +
-        "• 1111 (parte del código)\n" +
-        "• 1111\n" +
-        "• 11111\n" +
-        "• 1111\n\n" +
-        "*📝 IMPORTANTE:*\n" +
-        "Puedes buscar con el código completo o cualquier parte que coincida.\n" +
-        "El sistema busca en todos los campos posibles.\n\n" +
-        "O envía *cancelar* para regresar al menú."
+        "Envía tu código de empleado a continuación:\n\n" +
+        "*Ejemplos:* 20120638, 0638\n\n" +
+        "O envía *cancelar* para regresar."
     );
 }
 
@@ -3342,8 +2938,6 @@ async function manejarReclamosCalidad(message, userId) {
     
     const resultado = await consultarReclamosCalidad();
     await message.reply(resultado.mensaje);
-    
-    await enviarMenu(message);
 }
 
 async function enviarBienvenidaGrupo(chat) {
@@ -3351,25 +2945,18 @@ async function enviarBienvenidaGrupo(chat) {
         const mensajeBienvenida = 
             `👋 *¡Hola a todos!*\n\n` +
             `Mi nombre es *Jarabito* 🤖, tu asistente de seguridad e información de *Jarabe*\n\n` +
-            `*¿Cómo puedo ayudarte?*\n\n` +
-            `Para interactuar conmigo, simplemente escribe el comando:\n` +
+            `Para interactuar conmigo, escribe el comando:\n` +
             `*/menu* o */menú*\n\n` +
-            `*✨ Funciones disponibles:*\n` +
+            `*Funciones disponibles:*\n` +
             `• Consultar semáforo de territorios 🚦\n` +
             `• Consultar información SKAP 📋\n` +
             `• Acceder a checklists de seguridad ✅\n` +
             `• Consultar reclamos de calidad 📊\n` +
-            `• Consultar CIP Jarabe Terminado 🧪\n` +
-            `• Y mucho más...\n\n` +
-            `*⚠️ IMPORTANTE:*\n` +
-            `Solo responderé cuando uses el comando */menu* o */menú* primero.\n\n` +
+            `• Consultar CIP Jarabe Terminado 🧪\n\n` +
             `¡Estoy aquí para ayudar! 🚀`;
         
         await chat.sendMessage(mensajeBienvenida);
-        console.log(`✅ Mensaje de bienvenida enviado al grupo: ${chat.name}`);
-    } catch (error) {
-        console.error("❌ Error al enviar mensaje de bienvenida:", error);
-    }
+    } catch (error) {}
 }
 
 async function manejarEstadoUsuario(message, userId) {
@@ -3378,8 +2965,7 @@ async function manejarEstadoUsuario(message, userId) {
     
     if (texto === 'cancelar') {
         userStates.delete(userId);
-        await message.reply("❌ Operación cancelada. Regresando al menú principal.");
-        await enviarMenu(message);
+        await message.reply("❌ Operación cancelada.");
         return;
     }
     
@@ -3433,7 +3019,7 @@ async function manejarEstadoUsuario(message, userId) {
             menuAños += `${numeroConEmoji(index + 1)} - ${año}\n`;
         });
         
-        menuAños += `\n*Envía el número del año*\nO envía *cancelar* para regresar.`;
+        menuAños += `\n*Envía el número del año*`;
         
         await message.reply(menuAños);
         return;
@@ -3443,7 +3029,7 @@ async function manejarEstadoUsuario(message, userId) {
         const opcion = parseInt(texto);
         
         if (isNaN(opcion) || opcion < 1 || opcion > 3) {
-            await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 3.");
+            await message.reply("❌ Opción inválida.");
             return;
         }
         
@@ -3460,7 +3046,7 @@ async function manejarEstadoUsuario(message, userId) {
             menuMeses += `${numeroConEmoji(index + 1)} - ${mes}\n`;
         });
         
-        menuMeses += `\n*Envía el número del mes (1-12)*\nO envía *cancelar* para regresar.`;
+        menuMeses += `\n*Envía el número del mes (1-12)*`;
         
         await message.reply(menuMeses);
         return;
@@ -3470,7 +3056,7 @@ async function manejarEstadoUsuario(message, userId) {
         const mes = parseInt(texto);
         
         if (isNaN(mes) || mes < 1 || mes > 12) {
-            await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 12.");
+            await message.reply("❌ Opción inválida.");
             return;
         }
         
@@ -3485,7 +3071,6 @@ async function manejarEstadoUsuario(message, userId) {
         await message.reply(resultado.mensaje);
         
         userStates.delete(userId);
-        await enviarMenu(message);
         return;
     }
     
@@ -3495,7 +3080,7 @@ async function manejarEstadoUsuario(message, userId) {
         } else if (texto === '2') {
             await obtenerInfoTecnico(message, userId);
         } else {
-            await message.reply("❌ Opción inválida. Por favor envía 1 para Grupos o 2 para Técnicos.");
+            await message.reply("❌ Opción inválida.");
         }
         return;
     }
@@ -3505,7 +3090,7 @@ async function manejarEstadoUsuario(message, userId) {
         const grupos = estadoUsuario.datos.grupos;
         
         if (isNaN(opcion) || opcion < 1 || opcion > grupos.length) {
-            await message.reply(`❌ Opción inválida. Por favor envía un número del 1 al ${grupos.length}.`);
+            await message.reply(`❌ Opción inválida.`);
             return;
         }
         
@@ -3519,7 +3104,7 @@ async function manejarEstadoUsuario(message, userId) {
         const anos = estadoUsuario.datos.anos;
         
         if (isNaN(opcion) || opcion < 1 || opcion > anos.length) {
-            await message.reply(`❌ Opción inválida. Por favor envía un número del 1 al ${anos.length}.`);
+            await message.reply(`❌ Opción inválida.`);
             return;
         }
         
@@ -3532,23 +3117,11 @@ async function manejarEstadoUsuario(message, userId) {
         const mes = parseInt(texto);
         
         if (isNaN(mes) || mes < 1 || mes > 12) {
-            await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 12.");
+            await message.reply("❌ Opción inválida.");
             return;
         }
         
         await obtenerResultadosGrupo(message, userId, estadoUsuario.datos.grupo, estadoUsuario.datos.año, mes);
-        return;
-    }
-    
-    if (estadoUsuario.estado === 'checklist_consultar_otro_periodo_grupo') {
-        if (texto === '1') {
-            await obtenerAnosDisponibles(message, userId, 'grupo', estadoUsuario.datos.grupo);
-        } else if (texto === '2') {
-            userStates.delete(userId);
-            await enviarMenu(message);
-        } else {
-            await message.reply("❌ Opción inválida. Por favor envía 1 para otro período o 2 para volver al menú.");
-        }
         return;
     }
     
@@ -3569,7 +3142,7 @@ async function manejarEstadoUsuario(message, userId) {
         const anos = estadoUsuario.datos.anos;
         
         if (isNaN(opcion) || opcion < 1 || opcion > anos.length) {
-            await message.reply(`❌ Opción inválida. Por favor envía un número del 1 al ${anos.length}.`);
+            await message.reply(`❌ Opción inválida.`);
             return;
         }
         
@@ -3582,23 +3155,11 @@ async function manejarEstadoUsuario(message, userId) {
         const mes = parseInt(texto);
         
         if (isNaN(mes) || mes < 1 || mes > 12) {
-            await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 12.");
+            await message.reply("❌ Opción inválida.");
             return;
         }
         
         await obtenerResultadosTecnico(message, userId, estadoUsuario.datos, estadoUsuario.datos.año, mes);
-        return;
-    }
-    
-    if (estadoUsuario.estado === 'checklist_consultar_otro_periodo_tecnico') {
-        if (texto === '1') {
-            await obtenerAnosDisponibles(message, userId, 'tecnico', estadoUsuario.datos.codigo);
-        } else if (texto === '2') {
-            userStates.delete(userId);
-            await enviarMenu(message);
-        } else {
-            await message.reply("❌ Opción inválida. Por favor envía 1 para otro período o 2 para volver al menú.");
-        }
         return;
     }
     
@@ -3617,12 +3178,10 @@ async function manejarEstadoUsuario(message, userId) {
             await message.reply(resultado);
             
         } catch (error) {
-            console.error("Error en búsqueda ILC:", error.message);
-            await message.reply("❌ Error en la búsqueda. Intenta nuevamente.");
+            await message.reply("❌ Error en la búsqueda.");
         }
         
         userStates.delete(userId);
-        await enviarMenu(message);
         return;
     }
     
@@ -3641,12 +3200,10 @@ async function manejarEstadoUsuario(message, userId) {
             await message.reply(resultado);
             
         } catch (error) {
-            console.error("Error en búsqueda OUTS:", error.message);
-            await message.reply("❌ Error en la búsqueda. Intenta nuevamente.");
+            await message.reply("❌ Error en la búsqueda.");
         }
         
         userStates.delete(userId);
-        await enviarMenu(message);
         return;
     }
     
@@ -3656,7 +3213,7 @@ async function manejarEstadoUsuario(message, userId) {
         } else if (texto === '2') {
             await manejarSkapOUTS(message, userId);
         } else {
-            await message.reply("❌ Opción inválida. Por favor envía 1 para ILC o 2 para OUTS.");
+            await message.reply("❌ Opción inválida.");
         }
         return;
     }
@@ -3698,14 +3255,14 @@ async function manejarEstadoUsuario(message, userId) {
                         "2️⃣ - Cambiar imagen\n" +
                         "3️⃣ - Cambiar video\n" +
                         "4️⃣ - Cambiar documento\n" +
-                        "5️⃣ - Solo texto (sin archivo adjunto)\n\n" +
+                        "5️⃣ - Solo texto\n\n" +
                         "Envía el número de la opción (1-5)"
                     );
                 } else {
                     await eliminarProgramacion(message, userId, estadoUsuario);
                 }
             } else {
-                await message.reply("❌ Credenciales incorrectas. Intenta nuevamente.");
+                await message.reply("❌ Credenciales incorrectas.");
             }
         } else {
             await message.reply("Formato incorrecto. Usa: usuario:contraseña");
@@ -3723,41 +3280,23 @@ async function manejarEstadoUsuario(message, userId) {
             await message.reply(
                 "✅ *Archivo conservado*\n\n" +
                 "Ahora envía el NUEVO mensaje de texto:\n\n" +
-                "O envía *omitir* si solo quieres enviar el archivo sin texto.\n" +
-                "O envía *mantener* para conservar el mensaje actual."
+                "O envía *omitir* o *mantener*"
             );
             
-        } else if (opcion === '2') {
-            estadoUsuario.datos.tipoContenido = 'imagen';
+        } else if (opcion === '2' || opcion === '3' || opcion === '4') {
+            let tipo = '';
+            if (opcion === '2') tipo = 'imagen';
+            else if (opcion === '3') tipo = 'video';
+            else tipo = 'documento';
+            
+            estadoUsuario.datos.tipoContenido = tipo;
             estadoUsuario.estado = 'esperando_archivo_editar';
             userStates.set(userId, estadoUsuario);
             
             await message.reply(
-                "📸 *CAMBIAR IMAGEN*\n\n" +
-                "Envía la NUEVA imagen:\n\n" +
-                "O envía *mantener* para conservar la imagen actual."
-            );
-            
-        } else if (opcion === '3') {
-            estadoUsuario.datos.tipoContenido = 'video';
-            estadoUsuario.estado = 'esperando_archivo_editar';
-            userStates.set(userId, estadoUsuario);
-            
-            await message.reply(
-                "🎬 *CAMBIAR VIDEO*\n\n" +
-                "Envía el NUEVO video:\n\n" +
-                "O envía *mantener* para conservar el video actual."
-            );
-            
-        } else if (opcion === '4') {
-            estadoUsuario.datos.tipoContenido = 'documento';
-            estadoUsuario.estado = 'esperando_archivo_editar';
-            userStates.set(userId, estadoUsuario);
-            
-            await message.reply(
-                "📄 *CAMBIAR DOCUMENTO*\n\n" +
-                "Envía el NUEVO documento:\n\n" +
-                "O envía *mantener* para conservar el documento actual."
+                `📸 *CAMBIAR ${tipo.toUpperCase()}*\n\n` +
+                `Envía el NUEVO ${tipo}:\n\n` +
+                `O envía *mantener* para conservar el actual.`
             );
             
         } else if (opcion === '5') {
@@ -3769,11 +3308,11 @@ async function manejarEstadoUsuario(message, userId) {
             await message.reply(
                 "📝 *SOLO TEXTO*\n\n" +
                 "Ahora envía el NUEVO mensaje de texto:\n\n" +
-                "O envía *mantener* para conservar el mensaje actual."
+                "O envía *mantener*"
             );
             
         } else {
-            await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 5.");
+            await message.reply("❌ Opción inválida.");
         }
         return;
     }
@@ -3788,12 +3327,12 @@ async function manejarEstadoUsuario(message, userId) {
         return;
     }
     
-    if (estadoUsuario.estado === 'esperando_archivo') {
+    if (estadoUsuario.estado === 'esperando_archivo' || estadoUsuario.estado === 'esperando_archivo_editar') {
         await manejarArchivo(message, userId, estadoUsuario);
         return;
     }
     
-    if (estadoUsuario.estado === 'esperando_mensaje') {
+    if (estadoUsuario.estado === 'esperando_mensaje' || estadoUsuario.estado === 'esperando_mensaje_editar') {
         await manejarMensajeTexto(message, userId, estadoUsuario);
         return;
     }
@@ -3848,10 +3387,9 @@ async function manejarEstadoUsuario(message, userId) {
             await guardarProgramacion(message, userId, estadoUsuario);
         } else if (texto === '2' || texto === 'no') {
             userStates.delete(userId);
-            await message.reply("❌ Programación cancelada. Volviendo al menú principal.");
-            await enviarMenu(message);
+            await message.reply("❌ Programación cancelada.");
         } else {
-            await message.reply("Por favor selecciona:\n1 - Sí, guardar\n2 - No, cancelar");
+            await message.reply("Por favor selecciona:\n1 - Sí\n2 - No");
         }
         return;
     }
@@ -3865,9 +3403,8 @@ async function enviarMenu(message) {
     
     const menu = 
         `*Hola ${saludo}!* 🌞\n` +
-        `Mi nombre es *Jarabito* 🤖, tu asistente de seguridad e información de Jarabe.\n` +
-        `¿En qué te puedo ayudar hoy?\n\n` +
-        `*Selecciona una opción:*\n\n` +
+        `Mi nombre es *Jarabito* 🤖\n` +
+        `¿En qué te puedo ayudar?\n\n` +
         `1️⃣ - *Acadia* 📊\n` +
         `2️⃣ - *Guardian* 🛡️\n` +
         `3️⃣ - *Checklist de seguridad* ✅\n` +
@@ -3891,23 +3428,23 @@ async function manejarOpcionMenu(message, opcion) {
     };
     
     if (opcion === 1) {
-        await message.reply(`🔗 *Enlace para la opción ${opcion}:*\n${links[opcion]}\n\n*Nota:* Haz click en el enlace para poder entrar.`);
+        await message.reply(`🔗 *Acadia:* ${links[opcion]}`);
     } else if (opcion === 2) {
         await manejarGuardian(message, message.from);
     } else if (opcion === 3) {
         await obtenerChecklistSeguridad(message, message.from);
     } else if (opcion === 4) {
-        await message.reply("⏳ Consultando semáforo de territorio...");
+        await message.reply("⏳ Consultando semáforo...");
         const resultado = await obtenerSemaforoTerritorio();
         await message.reply(resultado);
     } else if (opcion === 5) {
         await manejarReclamosCalidad(message, message.from);
     } else if (opcion === 6) {
-        await message.reply(`🔗 *Enlace para la opción ${opcion}:*\n${links[opcion]}\n\n*Nota:* Haz click en el enlace para poder entrar.`);
+        await message.reply(`🔗 *Energía:* ${links[opcion]}`);
     } else if (opcion === 7) {
         await manejarCIPJarabeTerminado(message, message.from);
     } else if (opcion === 8) {
-        await message.reply(`🔗 *Enlace para la opción ${opcion}:*\n${links[opcion]}\n\n*Nota:* Haz click en el enlace para poder entrar.`);
+        await message.reply(`🔗 *CIP Jarabe simple:* ${links[opcion]}`);
     } else if (opcion === 9) {
         await iniciarProgramacion(message);
     } else if (opcion === 10) {
@@ -3916,11 +3453,9 @@ async function manejarOpcionMenu(message, opcion) {
         
         await message.reply(
             "📋 *SISTEMA SKAP*\n\n" +
-            "Elige el tipo de consulta:\n\n" +
             "1️⃣ - *ILC*\n" +
             "2️⃣ - *OUTS*\n\n" +
-            "Envía el número de la opción (1-2)\n" +
-            "O envía *cancelar* para regresar al menú principal."
+            "Envía el número de la opción (1-2)"
         );
     }
 }
@@ -3958,7 +3493,6 @@ async function verificarMensajesProgramados() {
         for (const horaProgramada of programacion.horas) {
             if (horaProgramada === horaActual) {
                 await enviarMensajeProgramado(programacion);
-                console.log(`📤 Mensaje enviado a las ${horaActual}`);
                 
                 if (!programacion.enviosHoy) {
                     scheduledMessages[i].enviosHoy = [];
@@ -3977,21 +3511,10 @@ async function verificarMensajesProgramados() {
                 try {
                     const archivoProgramaciones = path.join(__dirname, 'programaciones.json');
                     fs.writeFileSync(archivoProgramaciones, JSON.stringify(scheduledMessages, null, 2));
-                } catch (error) {
-                }
+                } catch (error) {}
                 
                 break;
             }
-        }
-    }
-    
-    const ahora = moment().tz(TIMEZONE);
-    const hoy = ahora.format('YYYY-MM-DD');
-    
-    for (let i = 0; i < scheduledMessages.length; i++) {
-        if (scheduledMessages[i].enviosHoy && scheduledMessages[i].enviosHoy.length > 0) {
-            const enviosHoy = scheduledMessages[i].enviosHoy.filter(enviado => enviado.startsWith(hoy));
-            scheduledMessages[i].enviosHoy = enviosHoy;
         }
     }
 }
@@ -4008,8 +3531,7 @@ async function enviarMensajeProgramado(programacion) {
                 try {
                     const chat = await client.getChatById(grupoId);
                     if (chat) chats.push(chat);
-                } catch (error) {
-                }
+                } catch (error) {}
             }
         }
         
@@ -4032,16 +3554,12 @@ async function enviarMensajeProgramado(programacion) {
                     await chat.sendMessage(programacion.mensaje);
                 }
                 
-                console.log(`✅ Enviado a: ${chat.name}`);
-                
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 
-            } catch (error) {
-            }
+            } catch (error) {}
         }
         
-    } catch (error) {
-    }
+    } catch (error) {}
 }
 
 client.on('qr', qr => {
@@ -4053,17 +3571,11 @@ client.on('qr', qr => {
     console.log('║    1. Abre WhatsApp en tu teléfono                       ║');
     console.log('║    2. Menú → WhatsApp Web                                ║');
     console.log('║    3. Escanea el código QR                               ║');
-    console.log('║    4. ESPERA 10-20 segundos                              ║');
     console.log('╚══════════════════════════════════════════════════════════╝\n');
     
     qrcode.generate(qr, { small: true });
     
-    console.log('\n🔗 O puedes usar este enlace:');
-    console.log(`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qr)}`);
-    
-    console.log(`\n📅 ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm:ss')}`);
-    console.log('📍 América/El_Salvador');
-    console.log('\n⚠️ Si no funciona después de 30 segundos, reinicia el bot.');
+    console.log(`\n🔗 Enlace QR: https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qr)}`);
 });
 
 client.on('authenticated', () => {
@@ -4081,14 +3593,7 @@ client.on('ready', async () => {
     console.log('╠══════════════════════════════════════════════════════════╣');
     console.log(`║ 🤖 Nombre: ${client.info.pushname || 'Jarabito'}                       ║`);
     console.log(`║ 📞 Número: ${client.info.wid.user}                            ║`);
-    console.log(`║ ⏰ Hora: ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm:ss')}  ║`);
-    console.log('║ 📍 Zona: América/El_Salvador                              ║');
-    console.log('║ 🚀 Estado: LISTO PARA RECIBIR MENSAJES                    ║');
     console.log('╚══════════════════════════════════════════════════════════╝\n');
-});
-
-client.on('loading_screen', (percent, message) => {
-    console.log(`🔄 Cargando: ${percent}% - ${message}`);
 });
 
 function cargarProgramacionesGuardadas() {
@@ -4100,32 +3605,24 @@ function cargarProgramacionesGuardadas() {
             
             scheduledMessages.length = 0;
             scheduledMessages.push(...programaciones);
-            console.log(`📂 Cargadas ${programaciones.length} programaciones guardadas`);
+            console.log(`📂 Cargadas ${programaciones.length} programaciones`);
         }
-    } catch (error) {
-        console.error("Error al cargar programaciones guardadas:", error);
-    }
+    } catch (error) {}
 }
 
 client.on('group_join', async (notification) => {
-    console.log(`🤖 *Jarabito* fue agregado al grupo: ${notification.chatId}`);
-    
     try {
         const chat = await client.getChatById(notification.chatId);
         if (chat.isGroup) {
             await enviarBienvenidaGrupo(chat);
         }
-    } catch (error) {
-        console.error("❌ Error al manejar ingreso a grupo:", error);
-    }
+    } catch (error) {}
 });
 
 client.on('message', async message => {
     try {
         const texto = message.body.trim();
         const userId = message.from;
-        
-        console.log(`📩 [${moment().tz(TIMEZONE).format('HH:mm:ss')}] Mensaje de ${userId}: ${texto.substring(0, 50)}...`);
         
         if (userStates.has(userId)) {
             await manejarEstadoUsuario(message, userId);
@@ -4142,35 +3639,13 @@ client.on('message', async message => {
             return;
         }
         
-        if (texto.toLowerCase() === 'ayuda' || texto.toLowerCase() === 'help') {
-            await message.reply(
-                "🤖 *BOT JARABITO - ASISTENTE DE SEGURIDAD Y INFORMACIÓN.*\n\n" +
-                "Comandos disponibles:\n" +
-                "• /menu o /menú - Mostrar menú principal\n" +
-                "• 1-10 - Seleccionar opción del menú\n" +
-                "• ayuda - Mostrar esta ayuda\n\n" +
-                "*IMPORTANTE:*\n" +
-                "Debes usar el comando /menu primero para interactuar conmigo.\n\n" +
-                "¡Estoy aquí para ayudarte! 🚀"
-            );
-            return;
-        }
-        
         if (message.from.endsWith('@g.us')) {
-            if (!texto.startsWith('/') && !/^[1-9]$|^10$/.test(texto) && texto.toLowerCase() !== 'ayuda') {
+            if (!texto.startsWith('/') && !/^[1-9]$|^10$/.test(texto)) {
                 return;
             }
         }
         
-    } catch (error) {
-        console.error("❌ Error en manejo de mensaje:", error);
-    }
-});
-
-client.on('auth_failure', msg => {
-    console.error('❌ Error de autenticación:', msg);
-    console.log('🔄 Reiniciando en 10 segundos...');
-    setTimeout(() => client.initialize(), 10000);
+    } catch (error) {}
 });
 
 client.on('disconnected', reason => {
@@ -4185,45 +3660,29 @@ async function iniciarBot() {
     console.log('╠══════════════════════════════════════════════════════════╣');
     console.log(`║ 🖥️  Sistema: ${process.platform}                                ║`);
     console.log(`║ 📦 Node.js: ${process.version}                             ║`);
-    console.log(`║ ⏰ Hora: ${new Date().toLocaleString()}                    ║`);
+    console.log(`║ 📍 Chrome: ${chromePath}                             ║`);
     console.log('╚══════════════════════════════════════════════════════════╝\n');
     
     crearCarpetas();
     cargarProgramacionesGuardadas();
     setInterval(verificarMensajesProgramados, 60000);
+    setInterval(limpiarArchivosTemporales, 3600000);
     
     await client.initialize();
-    
-    setInterval(() => {
-        if (client.info) {
-            const ahora = moment().tz(TIMEZONE);
-            console.log(`[${ahora.format('HH:mm:ss')}] 🤖 Bot activo | Programaciones: ${scheduledMessages.length} | Usuarios: ${userStates.size}`);
-        }
-    }, 300000);
 }
 
 process.on('SIGINT', async () => {
-    console.log('\n\n👋 Cerrando bot de WhatsApp...');
+    console.log('\n👋 Cerrando bot...');
     
     try {
         const archivoProgramaciones = path.join(__dirname, 'programaciones.json');
         fs.writeFileSync(archivoProgramaciones, JSON.stringify(scheduledMessages, null, 2));
-        console.log('💾 Programaciones guardadas');
-    } catch (error) {
-        console.error('❌ Error al guardar programaciones:', error);
-    }
+    } catch (error) {}
     
     await client.destroy();
-    console.log('✅ Bot cerrado correctamente');
     process.exit(0);
 });
 
 iniciarBot().catch(error => {
-    console.error('❌ ERROR CRÍTICO AL INICIAR:', error);
-    console.log('\n💡 POSIBLES SOLUCIONES:');
-    console.log('1. Verifica tu conexión a internet');
-    console.log('2. Cierra todas las ventanas de Chrome/Chromium');
-    console.log('3. Reinstala dependencias: npm install');
-    console.log('4. Ejecuta como administrador');
-    console.log('5. Actualiza Node.js a versión 18 o superior');
+    console.error('❌ ERROR CRÍTICO:', error.message);
 });
