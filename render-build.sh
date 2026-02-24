@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 
-echo "🚀 Iniciando build final..."
+echo "🚀 Build iniciado..."
 
-# Instalar dependencias
+# Instalar dependencias directamente
 npm install
-
-# Mostrar información de Chrome
-echo "🔍 Verificando Chrome..."
-which google-chrome-stable || which chromium-browser || echo "Chrome no encontrado en PATH"
 
 echo "✅ Build completado"
