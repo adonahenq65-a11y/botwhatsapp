@@ -78,7 +78,6 @@ const client = new Client({
     }),
     puppeteer: {
         headless: "new",
-        executablePath: '/usr/bin/google-chrome', // 👈 Ruta FIJA de Chrome en Render
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
