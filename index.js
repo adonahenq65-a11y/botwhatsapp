@@ -77,20 +77,17 @@ const client = new Client({
         dataPath: path.join(__dirname, 'whatsapp-session')
     }),
     puppeteer: {
-        headless: "new",
+        headless: true,
+        executablePath: '/usr/bin/chromium-browser', // 👈 ESTA ES LA RUTA CORRECTA EN RENDER
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
             '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu'
+            '--no-zygote'
         ]
-    },
-    webVersionCache: {
-        type: "remote",
-        remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html"
     }
 });
 
