@@ -2,10 +2,11 @@
 
 echo "🚀 Iniciando build final..."
 
-# Instalar dependencias normalmente
+# Instalar dependencias
 npm install
 
-# Decirle a Puppeteer que no descargue Chrome
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# Mostrar información de Chrome
+echo "🔍 Verificando Chrome..."
+which google-chrome-stable || which chromium-browser || echo "Chrome no encontrado en PATH"
 
 echo "✅ Build completado"
