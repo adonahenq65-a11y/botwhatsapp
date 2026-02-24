@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-echo "🚀 Iniciando build ultra-rápido..."
+echo "🚀 Iniciando build final..."
 
-# Instalar dependencias (sin instalar Chrome)
-npm install --ignore-scripts
+# Instalar dependencias normalmente
+npm install
 
-# Decirle a Puppeteer que use el Chrome del sistema
+# Decirle a Puppeteer que no descargue Chrome
 export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-echo "✅ Build completado en tiempo récord"
+echo "✅ Build completado"
